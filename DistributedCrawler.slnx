@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="CrawlerCore/CrawlerCore.csproj" Id="3534515d-c905-4ad4-8cbb-1e2cdee10217" />
+  <Project Path="CrawlerMaster.WPF/CrawlerMaster.WPF.csproj" />
+  <Project Path="CrawlerPlugins/CrawlerPlugins.csproj" Id="768b1af1-33f7-41cc-b6d8-108c7b6766f5" />
+  <Project Path="CrawlerWorker/CrawlerWorker.csproj" Id="f055992d-eb2b-49db-a72c-6319f7b8475e" />
+</Solution>
