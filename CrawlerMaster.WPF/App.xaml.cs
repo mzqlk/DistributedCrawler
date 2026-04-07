@@ -1,20 +1,26 @@
 ﻿using CrawlerCore.Entities;
 using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
+using CrawlerCore.Protos;
 using CrawlerMaster.WPF.Data;
+using CrawlerMaster.WPF.Infrastructure;
 using CrawlerMaster.WPF.Services;
+using CrawlerMaster.WPF.ViewModels;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Serilog;
 using System;
+using System.Configuration;
 using System.Windows;
 
 namespace CrawlerMaster.WPF
 {
     public partial class App : Application
     {
-        public static IServiceProvider ServiceProvider { get; private set; } = null!;
+        //public static IServiceProvider ServiceProvider { get; private set; } = null!;
+        public static IHost Host { get; private set; } = null!;
 
         /// <summary>
         /// 测试任务与节点的CRUD操作
@@ -27,7 +33,7 @@ namespace CrawlerMaster.WPF
                 var nodeService = serviceProvider.GetRequiredService<INodeManagementService>();
 
                 // 1. 测试创建爬虫任务
-                var testTask = new CrawlerTask
+                var testTask = new CrawlerCore.Entities.CrawlerTask
                 {
                     TaskName = "测试任务_工作日6",
                     StartUrls = new List<string> { "https://example.com" },
@@ -98,22 +104,35 @@ namespace CrawlerMaster.WPF
                 // 2. 注册全局异常处理
                 ConfigureGlobalExceptionHandling();
 
-                // 3. 依赖注入容器配置
-                var services = new ServiceCollection();
-                ConfigureServices(services);
-                ServiceProvider = services.BuildServiceProvider();
+                // 3. 构建通用主机，传入已初始化的 Logger
+                Host = Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder(e.Args)
+                    .UseSerilog(Log.Logger)          // 复用已有 Logger
+                    .ConfigureServices(ConfigureServices)
+                    .Build();
 
-                // 4. 异步初始化数据库
-                using var scope = ServiceProvider.CreateScope();
-                var dbContext = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
-                await dbContext.Database.EnsureCreatedAsync();
+                await Host.StartAsync();
+
+                // 4. 数据库初始化
+                using (var scope = Host.Services.CreateScope())
+                {
+                    var dbContext = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
+                    await dbContext.Database.EnsureCreatedAsync();
+                }
 
                 // ===================== 工作日6：数据库CRUD测试 =====================
                 //await TestDatabaseCrudAsync(scope.ServiceProvider);
                 // ================================================================
 
+                // 从容器解析 CrawlerCoordinatorService（确保服务实例被创建）
+                using (var scope = Host.Services.CreateScope())
+                {
+                    var coordinator = scope.ServiceProvider.GetRequiredService<CrawlerCoordinatorService>();
+                    // 可选：记录日志或做其他初始化
+                    Log.Information("CrawlerCoordinatorService 已解析");
+                }
+
                 // 5. 启动主窗口
-                var mainWindow = ServiceProvider.GetRequiredService<MainWindow>();
+                var mainWindow = Host.Services.GetRequiredService<MainWindow>();
                 mainWindow.Show();
             }
             catch (Exception ex)
@@ -158,34 +177,49 @@ namespace CrawlerMaster.WPF
             };
         }
 
-        /// <summary>
-        /// 依赖注入服务配置
-        /// </summary>
-        private void ConfigureServices(ServiceCollection services)
+        private void ConfigureServices(HostBuilderContext context, IServiceCollection services)
         {
-            // 加载配置文件
-            var config = new ConfigurationBuilder()
-                .SetBasePath(AppContext.BaseDirectory)
-                .AddJsonFile("appsettings.json", false)
-                .Build();
-            services.AddSingleton<IConfiguration>(config);
+            // Host.CreateDefaultBuilder 已自动注册 IConfiguration，无需重复添加
 
-            // 数据库上下文（SQLite）
+            services.Configure<GrpcSettings>(context.Configuration.GetSection("GrpcSettings"));
+
+            // 数据库上下文
             services.AddDbContext<CrawlerDbContext>(options =>
-                options.UseSqlite(config.GetConnectionString("CrawlerDb")));
+                options.UseSqlite(context.Configuration.GetConnectionString("ConnectionString")));
 
-            // 业务服务注册
+            // 业务服务（原项目已有）
             services.AddScoped<ITaskDataService, TaskDataService>();
             services.AddScoped<INodeManagementService, NodeDataService>();
 
-            // WPF窗口单例注册
-            services.AddSingleton<MainWindow>();
+            // ===== 任务1.5 核心服务注册 =====
+            services.AddHostedService<GrpcHostedService>();
+            services.AddSingleton<SessionManager>();
+
+            // 注册 CrawlerCoordinatorService 具体类型（单例）
+            services.AddSingleton<CrawlerCoordinatorService>();
+
+            services.AddSingleton<CrawlerCoordinator.CrawlerCoordinatorBase>(sp =>
+        sp.GetRequiredService<CrawlerCoordinatorService>());
+
+            services.AddSingleton<GrpcAuthenticationInterceptor>();
+
+            services.AddTransient<MainWindowViewModel>();
+            services.AddTransient<MainWindow>(provider =>
+            {
+                var viewModel = provider.GetRequiredService<MainWindowViewModel>();
+                return new MainWindow(viewModel);
+            });
         }
 
-        protected override void OnExit(ExitEventArgs e)
+        protected override async void OnExit(ExitEventArgs e)
         {
             Log.Information("Master 控制端正常退出");
-            LogConfiguration.CloseAndFlush();
+            if (Host != null)
+            {
+                await Host.StopAsync(TimeSpan.FromSeconds(5));
+                Host.Dispose();
+            }
+            Log.CloseAndFlush();  // 原项目清理逻辑
             base.OnExit(e);
         }
     }

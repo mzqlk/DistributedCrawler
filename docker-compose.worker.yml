@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: CrawlerWorker/Dockerfile
+    deploy:
+      replicas: 3
+    environment:
+      - MASTER_ENDPOINT=http://host.docker.internal:5001
+    networks:
+      - crawler-network
+
+networks:
+  crawler-network:
+    driver: bridge

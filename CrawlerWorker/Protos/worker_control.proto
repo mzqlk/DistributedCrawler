@@ -1,0 +1,39 @@
+﻿syntax = "proto3";
+
+package CrawlerSystem.Worker;
+
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "CrawlerWorker.Protos";
+
+/// <summary>
+/// Worker节点控制服务（原项目预留服务端底座，暂不实现业务逻辑）
+/// </summary>
+service WorkerControl {
+  rpc GetWorkerStatus (WorkerStatusRequest) returns (WorkerStatusResponse);
+  rpc ExecuteTaskCommand (TaskCommandRequest) returns (TaskCommandResponse);
+}
+
+message WorkerStatusRequest {
+  string node_id = 1;
+}
+
+message WorkerStatusResponse {
+  string node_id = 1;
+  bool is_running = 2;
+  int32 active_tasks = 3;
+  double cpu_usage = 4;
+  double memory_usage_mb = 5;
+  google.protobuf.Timestamp last_heartbeat = 6;
+}
+
+message TaskCommandRequest {
+  string task_id = 1;
+  string command = 2;
+  map<string, string> parameters = 3;
+}
+
+message TaskCommandResponse {
+  bool success = 1;
+  string message = 2;
+}

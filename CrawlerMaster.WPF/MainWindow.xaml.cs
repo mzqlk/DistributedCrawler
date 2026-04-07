@@ -1,5 +1,6 @@
 ﻿using CrawlerCore.Entities;
 using CrawlerMaster.WPF.Data;
+using CrawlerMaster.WPF.ViewModels;
 using Microsoft.EntityFrameworkCore;
 using System.Windows;
 
@@ -9,10 +10,11 @@ namespace CrawlerMaster.WPF
     {
         private readonly CrawlerDbContext _dbContext;
 
-        public MainWindow(CrawlerDbContext dbContext)
+        public MainWindow(MainWindowViewModel viewModel)
         {
             InitializeComponent();
-            _dbContext = dbContext;
+            //_dbContext = dbContext;
+            DataContext = viewModel;
             //_ = TestDatabaseAsync();
         }
 

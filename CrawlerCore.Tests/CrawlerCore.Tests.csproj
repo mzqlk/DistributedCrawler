@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+	<LangVersion>13.0</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,6 +20,15 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+	<!-- gRPC测试依赖（无ASP.NET Core Web依赖） -->
+	<PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
+	<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
+	<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<!-- 仅引用Core共享库，不引用Master/Worker端项目，避免兼容性问题 -->
+	<ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj" />
   </ItemGroup>
 
   <ItemGroup>

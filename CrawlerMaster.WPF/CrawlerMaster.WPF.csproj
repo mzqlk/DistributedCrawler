@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+	<LangVersion>13.0</LangVersion>
+	<StartupObject>CrawlerMaster.WPF.App</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,18 +16,30 @@
 
   <ItemGroup>
     <Folder Include="Views\" />
-    <Folder Include="ViewModels\" />
     <Folder Include="Models\" />
   </ItemGroup>
 
   <ItemGroup>
+	<!-- gRPC服务端依赖（.NET 10 兼容版） -->
+	<PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
+	<PackageReference Include="Google.Protobuf" Version="3.34.1" />
+	<PackageReference Include="Grpc.Tools" Version="2.80.0" PrivateAssets="All" />
+	<!-- Serilog日志 -->
+	<PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+	<PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+	<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+	<!-- UI组件 -->
+	<PackageReference Include="MaterialDesignThemes" Version="5.3.1" />
+	<!-- 通用主机（与.NET 10版本对齐） -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.5" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.5">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.5" />
+	<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.5" />
+	<PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
   </ItemGroup>
 

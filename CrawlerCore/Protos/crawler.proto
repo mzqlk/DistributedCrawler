@@ -1,0 +1,171 @@
+﻿syntax = "proto3";
+
+package CrawlerSystem;
+
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "CrawlerCore.Protos";
+
+/// <summary>
+/// 爬虫集群协调核心服务
+/// </summary>
+service CrawlerCoordinator {
+  /// <summary>
+  /// Worker节点注册接口
+  /// </summary>
+  rpc RegisterNode (NodeRegistration) returns (RegistrationResponse);
+  /// <summary>
+  /// Master-Worker双向流式通信通道
+  /// </summary>
+  rpc StartStreaming (stream FromWorker) returns (stream FromMaster);
+}
+
+/// <summary>
+/// Worker节点注册请求体
+/// </summary>
+message NodeRegistration {
+  string node_id = 1;
+  string machine_name = 2;
+  int32 cpu_cores = 3;
+  double total_memory_gb = 4;
+  string ip_address = 5;
+}
+
+/// <summary>
+/// 节点注册响应体
+/// </summary>
+message RegistrationResponse {
+  bool success = 1;
+  string session_id = 2;
+  string message = 3;
+  SystemConfig system_config = 4;
+}
+
+/// <summary>
+/// 系统配置体
+/// </summary>
+message SystemConfig {
+  int32 heartbeat_interval_seconds = 1;
+  int32 max_retry_attempts = 2;
+  int32 retry_delay_milliseconds = 3;
+}
+
+/// <summary>
+/// 节点心跳上报消息体
+/// </summary>
+message Heartbeat {
+  string node_id = 1;
+  double cpu_usage = 2;
+  double memory_usage_mb = 3;
+  double disk_usage_percent = 4;
+  int32 active_tasks = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+/// <summary>
+/// 爬虫任务状态枚举
+/// </summary>
+enum TaskStatus {
+  Pending = 0;
+  Running = 1;
+  Completed = 2;
+  Failed = 3;
+}
+
+/// <summary>
+/// 爬虫任务消息体
+/// </summary>
+message CrawlerTask {
+  string task_id = 1;
+  string task_name = 2;
+  repeated string start_urls = 3;
+  string plugin_name = 4;
+  map<string, string> configuration = 5;
+  int32 max_depth = 6;
+  int32 max_pages = 7;
+  TaskStatus status = 8;
+}
+
+/// <summary>
+/// 单页面爬取结果消息体
+/// </summary>
+message PageResult {
+  string url = 1;
+  int32 status_code = 2;
+  map<string, string> parsed_data = 3;
+  repeated string links = 4;
+}
+
+/// <summary>
+/// 爬虫任务整体结果消息体
+/// </summary>
+message CrawlResult {
+  string task_id = 1;
+  repeated PageResult page_results = 2;
+  google.protobuf.Timestamp completed_at = 3;
+}
+
+/// <summary>
+/// 任务进度上报消息体
+/// </summary>
+message TaskProgress {
+  string task_id = 1;
+  int32 crawled_pages = 2;
+  int32 total_pages = 3;
+  TaskStatus current_status = 4;
+  string error_message = 5;
+}
+
+/// <summary>
+/// 结构化日志条目消息体
+/// </summary>
+message LogEntry {
+  string node_id = 1;
+  string task_id = 2;
+  int32 log_level = 3;
+  string message = 4;
+  string exception_detail = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+/// <summary>
+/// Worker向Master发送的消息统一封装体
+/// </summary>
+message FromWorker {
+  oneof message {
+    Heartbeat heartbeat = 1;
+    LogEntry log_entry = 2;
+    CrawlResult crawl_result = 3;
+    TaskProgress task_progress = 4;
+  }
+}
+
+/// <summary>
+/// 任务控制指令枚举
+/// </summary>
+enum ControlCommand {
+  Start = 0;
+  Pause = 1;
+  Stop = 2;
+  Cancel = 3;
+}
+
+/// <summary>
+/// 任务控制指令消息体
+/// </summary>
+message TaskControl {
+  string task_id = 1;
+  ControlCommand command = 2;
+  string reason = 3;
+}
+
+/// <summary>
+/// Master向Worker发送的消息统一封装体
+/// </summary>
+message FromMaster {
+  oneof message {
+    CrawlerTask new_task = 1;
+    TaskControl task_control = 2;
+    SystemConfig system_config = 3;
+  }
+}

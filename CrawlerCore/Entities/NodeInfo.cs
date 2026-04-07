@@ -1,4 +1,5 @@
-﻿using CrawlerCore.Infrastructure;
+﻿using CrawlerCore.Common;
+using CrawlerCore.Infrastructure;
 using System;
 
 namespace CrawlerCore.Entities
@@ -68,7 +69,7 @@ namespace CrawlerCore.Entities
         /// </summary>
         public NodeInfo()
         {
-            NodeId = Guid.NewGuid().ToString();
+            NodeId = NodeIdHelper.GetNodeId();
             LastHeartbeat = DateTime.UtcNow;
             Status = NodeStatus.Pending;
 

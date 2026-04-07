@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/解决方案项/">
+    <File Path="docker-compose.worker.yml" />
+  </Folder>
   <Project Path="CrawlerCore.Tests/CrawlerCore.Tests.csproj" Id="9dccbd3a-be8b-474e-bfee-93e1543d0cc1" />
   <Project Path="CrawlerCore/CrawlerCore.csproj" Id="3534515d-c905-4ad4-8cbb-1e2cdee10217" />
   <Project Path="CrawlerMaster.WPF/CrawlerMaster.WPF.csproj" />

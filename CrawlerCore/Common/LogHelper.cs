@@ -6,7 +6,6 @@ namespace CrawlerCore.Infrastructure
 {
     /// <summary>
     /// 统一日志辅助类，封装 Serilog 常用级别。
-    /// 所有方法直接调用全局 Log.Logger，无需额外检查（Serilog 默认 Logger.None 安全）。
     /// </summary>
     public static class LogHelper
     {
