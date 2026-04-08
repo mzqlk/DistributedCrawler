@@ -19,77 +19,7 @@ namespace CrawlerMaster.WPF
 {
     public partial class App : Application
     {
-        //public static IServiceProvider ServiceProvider { get; private set; } = null!;
         public static IHost Host { get; private set; } = null!;
-
-        /// <summary>
-        /// 测试任务与节点的CRUD操作
-        /// </summary>
-        private async Task TestDatabaseCrudAsync(IServiceProvider serviceProvider)
-        {
-            try
-            {
-                var taskService = serviceProvider.GetRequiredService<ITaskDataService>();
-                var nodeService = serviceProvider.GetRequiredService<INodeManagementService>();
-
-                // 1. 测试创建爬虫任务
-                var testTask = new CrawlerCore.Entities.CrawlerTask
-                {
-                    TaskName = "测试任务_工作日6",
-                    StartUrls = new List<string> { "https://example.com" },
-                    PluginName = "TestPlugin",
-                    MaxDepth = 2,
-                    MaxPages = 10,
-                    Configuration = new Dictionary<string, string>
-                    {
-                        ["Selector"] = "body",
-                        ["Delay"] = "1000"
-                    }
-                };
-                var addedTask = await taskService.AddTaskAsync(testTask);
-                Console.WriteLine($"任务创建成功：{addedTask.TaskId}");
-
-                // 2. 测试查询所有任务
-                var allTasks = await taskService.GetAllTasksAsync();
-                Console.WriteLine($"当前总任务数：{allTasks.Count}");
-
-                // 3. 测试更新任务状态
-                var updateResult = await taskService.UpdateTaskStatusAsync(addedTask.TaskId, CrawlerCore.Entities.TaskStatus.Running);
-                Console.WriteLine($"任务状态更新：{updateResult}");
-
-                // 4. 测试创建节点
-                var testNode = new NodeInfo
-                {
-                    NodeId = "TestNode_001",
-                    MachineName = "TEST-PC",
-                    IpAddress = "127.0.0.1",
-                    CpuCores = 8,
-                    TotalMemoryGb = 16,
-                    Status = NodeStatus.Online,
-                    CpuUsage = 25.5,
-                    MemoryUsageMb = 4096,
-                    DiskUsagePercent = 30
-                };
-                var registeredNode = await nodeService.RegisterNodeAsync(testNode);
-                Console.WriteLine($"节点注册成功：{registeredNode.NodeId}");
-
-                // 5. 测试查询在线节点
-                var activeNodes = await nodeService.GetActiveNodesAsync();
-                Console.WriteLine($"在线节点数：{activeNodes.Count}");
-
-                // 6. 测试更新节点心跳
-                var heartbeatResult = await nodeService.UpdateNodeHeartbeatAsync(registeredNode.NodeId);
-                Console.WriteLine($"节点心跳更新：{heartbeatResult}");
-
-                MessageBox.Show("数据库CRUD测试完成！\n任务/节点增删改查均正常", "测试成功",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"数据库测试失败：{ex.Message}", "错误",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
 
         protected override async void OnStartup(StartupEventArgs e)
         {
@@ -118,10 +48,6 @@ namespace CrawlerMaster.WPF
                     var dbContext = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
                     await dbContext.Database.EnsureCreatedAsync();
                 }
-
-                // ===================== 工作日6：数据库CRUD测试 =====================
-                //await TestDatabaseCrudAsync(scope.ServiceProvider);
-                // ================================================================
 
                 // 从容器解析 CrawlerCoordinatorService（确保服务实例被创建）
                 using (var scope = Host.Services.CreateScope())

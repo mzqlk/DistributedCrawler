@@ -1,5 +1,4 @@
-﻿// 【关键修复】.NET 10 非TLS HTTP/2全局开关，必须在应用启动第一行设置，确保HttpClient初始化前生效
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Serilog;
 using CrawlerCore.Infrastructure;
@@ -9,9 +8,6 @@ using Microsoft.Extensions.DependencyInjection;
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http3UnencryptedSupport", true);
 
-
-
-// 【关键修复】先初始化引导级Serilog，确保启动全链路异常可追溯，对齐原项目日志规范
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
     .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
@@ -21,11 +17,10 @@ try
 {
     Log.Information("Worker节点应用启动，开始加载配置");
 
-    // 【关键修复】100%对齐原项目环境变量规范，显式映射官方环境变量
     var configuration = new ConfigurationBuilder()
         .SetBasePath(Directory.GetCurrentDirectory())
         .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-        // 原项目官方环境变量映射，优先级最高
+        // 环境变量映射，优先级最高
         .AddInMemoryCollection(GetOfficialEnvironmentVariableMappings())
         // 通用环境变量支持，双下划线配置映射
         .AddEnvironmentVariables()
@@ -45,7 +40,7 @@ try
             config.AddConfiguration(configuration);
         })
         .UseSerilog(Log.Logger)
-        // 依赖注入配置，严格对齐原项目DI规范与生命周期
+        // 依赖注入配置
         .ConfigureServices((context, services) =>
         {
             // 1. 强类型配置绑定
@@ -57,10 +52,10 @@ try
             services.AddSingleton<GrpcAuthenticationInterceptor>();
             services.AddSingleton<IGrpcWorkerServiceFactory, GrpcWorkerServiceFactory>();
 
-            // WorkerControlService：Scoped生命周期，对齐gRPC官方最佳实践
+            // WorkerControlService：Scoped生命周期
             services.AddScoped<WorkerControlService>();
 
-            // 3. gRPC服务全局配置，与Master端100%对齐
+            // 3. gRPC服务全局配置，与Master端对齐
             services.AddGrpc(options =>
             {
                 options.Interceptors.Add<GrpcAuthenticationInterceptor>();
@@ -90,15 +85,10 @@ finally
     Log.CloseAndFlush();
 }
 
-/// <summary>
-/// 100%对齐原项目官方环境变量映射规则
-/// 确保原文档定义的MASTER_ENDPOINT等环境变量直接生效
-/// </summary>
 Dictionary<string, string> GetOfficialEnvironmentVariableMappings()
 {
     var mappings = new Dictionary<string, string>();
 
-    // 原项目官方核心环境变量
     var masterEndpoint = Environment.GetEnvironmentVariable("MASTER_ENDPOINT");
     if (!string.IsNullOrWhiteSpace(masterEndpoint))
     {

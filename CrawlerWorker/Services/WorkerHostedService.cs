@@ -1,259 +1,721 @@
 ﻿using CrawlerCore.Infrastructure;
+using CrawlerCore.Infrastructure.Constants;
 using CrawlerCore.Protos;
 using CrawlerWorker.Communication;
 using Grpc.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Logging;
+using System;
 using System.Diagnostics;
+using System.Threading;
+using System.Threading.Channels;
+using System.Threading.Tasks;
+using Channel = System.Threading.Channels.Channel;
 
-namespace CrawlerWorker.Services;
-
-/// <summary>
-/// Worker核心生命周期托管服务，严格对齐原项目BackgroundService设计
-/// 注册流程严格遵循官方顺序，严守工作日13阶段边界：仅完成注册流程，不实现双向流/业务逻辑
-/// </summary>
-public class WorkerHostedService : BackgroundService
+namespace CrawlerWorker.Services
 {
-    private readonly IGrpcClientManager _grpcClientManager;
-    private readonly INodeInfoCollector _nodeInfoCollector;
-    private readonly IWorkerSessionManager _sessionManager;
-    private readonly GrpcSettings _grpcSettings;
-    private readonly ILogger<WorkerHostedService> _logger;
-    private readonly IHostApplicationLifetime _appLifetime;
-
-    // 严格遵循原项目「注册成功→启动双向流」的流程顺序，仅预留扩展入口，不实现逻辑
-    // 【关键修复】标准事件定义，线程安全
-    private event Func<NodeRegistration, RegistrationResponse, CancellationToken, Task>? _nodeRegistered;
-    public event Func<NodeRegistration, RegistrationResponse, CancellationToken, Task> NodeRegistered
-    {
-        add => _nodeRegistered += value;
-        remove => _nodeRegistered -= value;
-    }
-
-    public WorkerHostedService(
-        IGrpcClientManager grpcClientManager,
-        INodeInfoCollector nodeInfoCollector,
-        IWorkerSessionManager sessionManager,
-        IOptions<GrpcSettings> grpcSettings,
-        ILogger<WorkerHostedService> logger,
-        IHostApplicationLifetime appLifetime)
-    {
-        _grpcClientManager = grpcClientManager;
-        _nodeInfoCollector = nodeInfoCollector;
-        _sessionManager = sessionManager;
-        _grpcSettings = grpcSettings.Value;
-        _logger = logger;
-        _appLifetime = appLifetime;
-    }
-
     /// <summary>
-    /// Worker核心执行流程，100%对齐原项目官方启动顺序
-    /// 严守阶段边界：仅完成注册流程，不启动服务端监听，不实现双向流
+    /// Worker核心生命周期托管服务，严格对齐原项目流程
+    /// 修复竞态、优雅关闭、内存泄漏、事件异常隔离等所有问题
     /// </summary>
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public class WorkerHostedService : BackgroundService, IDisposable
     {
-        _logger.LogInformation("Worker节点启动，进程ID: {ProcessId}", Process.GetCurrentProcess().Id);
+        private readonly IGrpcClientManager _grpcClientManager;
+        private readonly INodeInfoCollector _nodeInfoCollector;
+        private readonly IWorkerSessionManager _sessionManager;
+        private readonly GrpcSettings _grpcSettings;
+        private readonly IHostApplicationLifetime _appLifetime;
+        private readonly object _streamLock = new();
+        private readonly object _eventLock = new();
+        private bool _disposed = false;
 
-        try
+        #region 事件定义（线程安全，异常隔离）
+        private Func<NodeRegistration, RegistrationResponse, CancellationToken, Task>? _nodeRegistered;
+        public event Func<NodeRegistration, RegistrationResponse, CancellationToken, Task> NodeRegistered
         {
-            // 步骤1：采集节点基础信息
-            var nodeRegistration = await _nodeInfoCollector.CollectNodeRegistrationAsync(stoppingToken).ConfigureAwait(false);
-
-            // 步骤2：注册请求前置参数校验，严格对齐proto必填字段
-            if (!ValidateNodeRegistration(nodeRegistration))
-            {
-                _logger.LogCritical("节点注册参数校验失败，Worker启动终止");
-                _appLifetime.StopApplication();
-                return;
-            }
-
-            // 步骤3：Master端口连通性预检测
-            var connectivity = await _grpcClientManager.CheckMasterConnectivityAsync(stoppingToken).ConfigureAwait(false);
-            if (!connectivity)
-            {
-                _logger.LogCritical("Master端点不可达，Worker启动失败");
-                _appLifetime.StopApplication();
-                return;
-            }
-
-            // 步骤4：执行节点注册，带官方规范的重试机制
-            var registrationResponse = await ExecuteRegistrationWithRetryAsync(nodeRegistration, stoppingToken).ConfigureAwait(false);
-            if (registrationResponse == null || !registrationResponse.Success)
-            {
-                _logger.LogCritical("节点注册失败，Worker启动失败");
-                _appLifetime.StopApplication();
-                return;
-            }
-
-            // 步骤5：保存会话信息
-            _sessionManager.SaveSession(registrationResponse);
-            _logger.LogInformation("节点注册成功，SessionId: {SessionId}", registrationResponse.SessionId);
-
-            // 步骤6：【关键修复】线程安全触发注册成功事件，仅预留双向流启动入口（工作日14实现）
-            // 严守阶段边界：不实现任何双向流逻辑，仅触发事件供后续阶段订阅
-            await OnNodeRegisteredAsync(nodeRegistration, registrationResponse, stoppingToken).ConfigureAwait(false);
-
-            // 保持进程运行，监听停止信号，无任何业务逻辑侵入
-            _logger.LogInformation("Worker节点正常运行，等待停止信号");
-            await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false);
+            add { lock (_eventLock) _nodeRegistered += value; }
+            remove { lock (_eventLock) _nodeRegistered -= value; }
         }
-        catch (OperationCanceledException)
-        {
-            _logger.LogInformation("Worker执行流程被取消，开始优雅关闭");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogCritical(ex, "Worker执行流程发生致命异常");
-            _appLifetime.StopApplication();
-        }
-    }
 
-    /// <summary>
-    /// 【关键修复】线程安全的事件触发方法，避免空引用竞态
-    /// </summary>
-    private async Task OnNodeRegisteredAsync(NodeRegistration registration, RegistrationResponse response, CancellationToken cancellationToken)
-    {
-        var handler = _nodeRegistered;
-        if (handler != null)
+        private Func<string, CancellationToken, Task>? _streamConnected;
+        public event Func<string, CancellationToken, Task> StreamConnected
         {
-            _logger.LogDebug("触发节点注册成功事件");
-            await handler.Invoke(registration, response, cancellationToken).ConfigureAwait(false);
+            add { lock (_eventLock) _streamConnected += value; }
+            remove { lock (_eventLock) _streamConnected -= value; }
         }
-    }
 
-    /// <summary>
-    /// 注册请求前置参数校验，严格对齐proto必填字段，符合原项目健壮性要求
-    /// </summary>
-    private bool ValidateNodeRegistration(NodeRegistration registration)
-    {
-        if (string.IsNullOrWhiteSpace(registration.NodeId))
+        private Func<string, CancellationToken, Task>? _streamDisconnected;
+        public event Func<string, CancellationToken, Task> StreamDisconnected
         {
-            _logger.LogError("节点注册参数校验失败：NodeId不能为空");
-            return false;
+            add { lock (_eventLock) _streamDisconnected += value; }
+            remove { lock (_eventLock) _streamDisconnected -= value; }
         }
-        if (registration.NodeId.Length > MaxNodeIdLength)
-        {
-            _logger.LogError("节点注册参数校验失败：NodeId长度不能超过128字符");
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(registration.MachineName))
-        {
-            _logger.LogError("节点注册参数校验失败：MachineName不能为空");
-            return false;
-        }
-        if (registration.CpuCores <= 0)
-        {
-            _logger.LogError("节点注册参数校验失败：CpuCores必须大于0");
-            return false;
-        }
-        if (registration.TotalMemoryGb < 0)
-        {
-            _logger.LogError("节点注册参数校验失败：TotalMemoryGb不能为负数");
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(registration.IpAddress))
-        {
-            _logger.LogWarning("节点IP地址为空，使用默认值127.0.0.1");
-            registration.IpAddress = "127.0.0.1";
-        }
-        return true;
-    }
 
-    /// <summary>
-    /// 带重试机制的节点注册流程，严格对齐原项目规范
-    /// 【关键修复】每次重试前校验取消状态，精准异常分级，总超时控制
-    /// </summary>
-    private async Task<RegistrationResponse?> ExecuteRegistrationWithRetryAsync(
-        NodeRegistration nodeRegistration,
-        CancellationToken cancellationToken)
-    {
-        var maxRetryAttempts = _grpcSettings.MaxRetryAttempts;
-        var retryDelayMs = _grpcSettings.RetryDelayMilliseconds;
-        RegistrationResponse? response = null;
-        // 整个重试流程总超时，避免无限重试
-        using var totalTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(maxRetryAttempts * 10));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, totalTimeoutCts.Token);
-
-        for (var attempt = 1; attempt <= maxRetryAttempts; attempt++)
+        private Func<CrawlerTask, CancellationToken, Task>? _newTaskReceived;
+        public event Func<CrawlerTask, CancellationToken, Task> NewTaskReceived
         {
-            // 【关键修复】每次重试前强制校验取消状态
-            linkedCts.Token.ThrowIfCancellationRequested();
+            add { lock (_eventLock) _newTaskReceived += value; }
+            remove { lock (_eventLock) _newTaskReceived -= value; }
+        }
+
+        private Func<TaskControl, CancellationToken, Task>? _taskControlReceived;
+        public event Func<TaskControl, CancellationToken, Task> TaskControlReceived
+        {
+            add { lock (_eventLock) _taskControlReceived += value; }
+            remove { lock (_eventLock) _taskControlReceived -= value; }
+        }
+
+        private Func<SystemConfig, CancellationToken, Task>? _systemConfigReceived;
+        public event Func<SystemConfig, CancellationToken, Task> SystemConfigReceived
+        {
+            add { lock (_eventLock) _systemConfigReceived += value; }
+            remove { lock (_eventLock) _systemConfigReceived -= value; }
+        }
+        #endregion
+
+        #region 流与心跳管理字段
+        private Channel<FromWorker>? _sendChannel;
+        private CancellationTokenSource? _streamCts;
+        private PeriodicTimer? _heartbeatTimer;
+        private int _isStreamRunning = 0;
+        private int _reconnectAttempts = 0;
+        #endregion
+
+        public WorkerHostedService(
+            IGrpcClientManager grpcClientManager,
+            INodeInfoCollector nodeInfoCollector,
+            IWorkerSessionManager sessionManager,
+            IOptions<GrpcSettings> grpcSettings,
+            IHostApplicationLifetime appLifetime)
+        {
+            _grpcClientManager = grpcClientManager ?? throw new ArgumentNullException(nameof(grpcClientManager));
+            _nodeInfoCollector = nodeInfoCollector ?? throw new ArgumentNullException(nameof(nodeInfoCollector));
+            _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
+            _grpcSettings = grpcSettings.Value ?? throw new ArgumentNullException(nameof(grpcSettings));
+            _appLifetime = appLifetime ?? throw new ArgumentNullException(nameof(appLifetime));
+
+            _nodeRegistered += OnNodeRegistered_StartStreamingAsync;
+        }
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            LogHelper.Info($"Worker节点启动，进程ID: {Process.GetCurrentProcess().Id}");
 
             try
             {
-                _logger.LogInformation("开始节点注册，第{Attempt}次尝试，NodeId: {NodeId}", attempt, nodeRegistration.NodeId);
+                var nodeRegistration = await _nodeInfoCollector.CollectNodeRegistrationAsync(stoppingToken).ConfigureAwait(false);
 
-                // 创建注册请求头，携带认证Token，与Master端拦截器完全匹配
-                var headers = new Metadata
+                if (!ValidateNodeRegistration(nodeRegistration))
                 {
-                    { "authorization", $"Bearer {_grpcSettings.NodeAuthToken}" },
-                    { "node-id", nodeRegistration.NodeId }
-                };
-
-                // 单次请求deadline：10s，严格控制单次请求超时
-                var deadline = DateTime.UtcNow.AddSeconds(10);
-                response = await _grpcClientManager.CoordinatorClient.RegisterNodeAsync(
-                    nodeRegistration,
-                    headers,
-                    deadline: deadline,
-                    cancellationToken: linkedCts.Token).ConfigureAwait(false);
-
-                if (response.Success)
-                {
-                    _logger.LogInformation("节点注册成功，第{Attempt}次尝试完成", attempt);
-                    return response;
+                    LogHelper.Fatal("节点注册参数校验失败，Worker启动终止");
+                    _appLifetime.StopApplication();
+                    return;
                 }
 
-                // 业务逻辑错误，不触发重试（如NodeId重复、参数非法）
-                _logger.LogError("节点注册被拒绝，原因: {Message}", response.Message);
-                return response;
+                var connectivity = await _grpcClientManager.CheckMasterConnectivityAsync(stoppingToken).ConfigureAwait(false);
+                if (!connectivity)
+                {
+                    LogHelper.Fatal("Master端点不可达，Worker启动失败");
+                    _appLifetime.StopApplication();
+                    return;
+                }
+
+                var registrationResponse = await ExecuteRegistrationWithRetryAsync(nodeRegistration, stoppingToken).ConfigureAwait(false);
+                if (registrationResponse == null || !registrationResponse.Success)
+                {
+                    LogHelper.Fatal("节点注册失败，Worker启动失败");
+                    _appLifetime.StopApplication();
+                    return;
+                }
+
+                _sessionManager.SaveSession(registrationResponse);
+                LogHelper.Info($"节点注册成功，SessionId: {registrationResponse.SessionId}");
+
+                var handler = Volatile.Read(ref _nodeRegistered);
+                if (handler != null)
+                {
+                    foreach (Func<NodeRegistration, RegistrationResponse, CancellationToken, Task> subscriber in handler.GetInvocationList())
+                    {
+                        try
+                        {
+                            await subscriber.Invoke(nodeRegistration, registrationResponse, stoppingToken).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogHelper.Error(ex, "节点注册事件订阅者执行异常");
+                        }
+                    }
+                }
+
+                LogHelper.Info("Worker节点正常运行，等待停止信号");
+                await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false);
             }
-            // 不可重试异常：直接终止
-            catch (RpcException ex) when (ex.StatusCode is StatusCode.Unauthenticated or StatusCode.AlreadyExists or StatusCode.InvalidArgument)
+            catch (OperationCanceledException)
             {
-                _logger.LogCritical(ex, "节点注册发生不可重试异常，终止重试");
-                return null;
+                LogHelper.Info("Worker执行流程被取消，开始优雅关闭");
             }
-            // 可重试异常：网络问题、服务不可用、超时，触发重试
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "节点注册第{Attempt}次尝试失败", attempt);
-
-                // 最后一次尝试，不再重试
-                if (attempt >= maxRetryAttempts)
-                {
-                    _logger.LogCritical(ex, "节点注册达到最大重试次数，注册失败");
-                    return null;
-                }
-
-                // 等待重试间隔，支持取消
-                await Task.Delay(retryDelayMs, linkedCts.Token).ConfigureAwait(false);
+                LogHelper.Fatal(ex, "Worker执行流程发生致命异常");
+                _appLifetime.StopApplication();
+            }
+            finally
+            {
+                await CleanupStreamResourcesAsync().ConfigureAwait(false);
             }
         }
 
-        return response;
+        #region 双向流核心实现
+        private async Task OnNodeRegistered_StartStreamingAsync(
+            NodeRegistration registration,
+            RegistrationResponse response,
+            CancellationToken cancellationToken)
+        {
+            LogHelper.Debug("节点注册成功事件触发，准备启动双向流");
+            _reconnectAttempts = 0;
+            await StartStreamingAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task StartStreamingAsync(CancellationToken stoppingToken)
+        {
+            if (Interlocked.CompareExchange(ref _isStreamRunning, 1, 0) != 0)
+            {
+                LogHelper.Warn("双向流已在运行，跳过重复启动");
+                return;
+            }
+
+            try
+            {
+                if (!_sessionManager.IsRegistered)
+                {
+                    LogHelper.Error("启动双向流失败：节点未注册");
+                    return;
+                }
+
+                _streamCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                _sendChannel = Channel.CreateUnbounded<FromWorker>(new UnboundedChannelOptions
+                {
+                    SingleReader = true,
+                    SingleWriter = false,
+                    AllowSynchronousContinuations = false
+                });
+
+                var headers = new Metadata
+                {
+                    { "node-id", _nodeInfoCollector.GetNodeId() },
+                    { "session-id", _sessionManager.SessionId! },
+                    { "authorization", $"Bearer {_grpcSettings.NodeAuthToken}" }
+                };
+
+                LogHelper.Info("开始建立与Master的双向流通道");
+                var call = _grpcClientManager.CoordinatorClient.StartStreaming(
+                    headers: headers,
+                    cancellationToken: _streamCts.Token);
+
+                LogHelper.Info("双向流通道建立成功");
+                var connectedHandler = Volatile.Read(ref _streamConnected);
+                if (connectedHandler != null)
+                {
+                    foreach (Func<string, CancellationToken, Task> subscriber in connectedHandler.GetInvocationList())
+                    {
+                        try
+                        {
+                            await subscriber.Invoke(_sessionManager.SessionId!, _streamCts.Token).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogHelper.Error(ex, "流连接事件订阅者执行异常");
+                        }
+                    }
+                }
+
+                _reconnectAttempts = 0;
+
+                var readTask = StartReadLoopAsync(call.ResponseStream, _streamCts.Token);
+                var writeTask = StartWriteLoopAsync(call.RequestStream, _streamCts.Token);
+                var heartbeatTask = StartHeartbeatLoopAsync(_streamCts.Token);
+
+                await Task.WhenAny(readTask, writeTask, heartbeatTask).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, "双向流运行异常");
+                throw;
+            }
+            finally
+            {
+                await CleanupStreamResourcesAsync().ConfigureAwait(false);
+                Interlocked.Exchange(ref _isStreamRunning, 0);
+
+                var disconnectedHandler = Volatile.Read(ref _streamDisconnected);
+                if (disconnectedHandler != null)
+                {
+                    foreach (Func<string, CancellationToken, Task> subscriber in disconnectedHandler.GetInvocationList())
+                    {
+                        try
+                        {
+                            await subscriber.Invoke(_sessionManager.SessionId!, stoppingToken).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogHelper.Error(ex, "流断开事件订阅者执行异常");
+                        }
+                    }
+                }
+
+                await HandleStreamReconnectAsync(stoppingToken).ConfigureAwait(false);
+            }
+        }
+
+        private async Task StartReadLoopAsync(
+            IAsyncStreamReader<FromMaster> responseStream,
+            CancellationToken cancellationToken)
+        {
+            LogHelper.Debug("启动双向流读循环");
+
+            await foreach (var message in responseStream.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                switch (message.MessageCase)
+                {
+                    case FromMaster.MessageOneofCase.NewTask:
+                        LogHelper.Info($"收到Master下发的新任务: TaskId={message.NewTask.TaskId}");
+                        var taskHandler = Volatile.Read(ref _newTaskReceived);
+                        if (taskHandler != null)
+                        {
+                            foreach (Func<CrawlerTask, CancellationToken, Task> subscriber in taskHandler.GetInvocationList())
+                            {
+                                try
+                                {
+                                    await subscriber.Invoke(message.NewTask, cancellationToken).ConfigureAwait(false);
+                                }
+                                catch (Exception ex)
+                                {
+                                    LogHelper.Error(ex, "新任务事件订阅者执行异常");
+                                }
+                            }
+                        }
+                        break;
+
+                    case FromMaster.MessageOneofCase.TaskControl:
+                        LogHelper.Info($"收到Master下发的任务控制指令: TaskId={message.TaskControl.TaskId}, Command={message.TaskControl.Command}");
+                        var controlHandler = Volatile.Read(ref _taskControlReceived);
+                        if (controlHandler != null)
+                        {
+                            foreach (Func<TaskControl, CancellationToken, Task> subscriber in controlHandler.GetInvocationList())
+                            {
+                                try
+                                {
+                                    await subscriber.Invoke(message.TaskControl, cancellationToken).ConfigureAwait(false);
+                                }
+                                catch (Exception ex)
+                                {
+                                    LogHelper.Error(ex, "任务控制事件订阅者执行异常");
+                                }
+                            }
+                        }
+                        break;
+
+                    case FromMaster.MessageOneofCase.SystemConfig:
+                        LogHelper.Info("收到Master下发的系统配置更新");
+                        var configHandler = Volatile.Read(ref _systemConfigReceived);
+                        if (configHandler != null)
+                        {
+                            foreach (Func<SystemConfig, CancellationToken, Task> subscriber in configHandler.GetInvocationList())
+                            {
+                                try
+                                {
+                                    await subscriber.Invoke(message.SystemConfig, cancellationToken).ConfigureAwait(false);
+                                }
+                                catch (Exception ex)
+                                {
+                                    LogHelper.Error(ex, "系统配置事件订阅者执行异常");
+                                }
+                            }
+                        }
+                        break;
+
+                    default:
+                        LogHelper.Warn($"收到Master未知类型消息: {message.MessageCase}");
+                        break;
+                }
+            }
+
+            LogHelper.Debug("双向流读循环结束");
+        }
+
+        private async Task StartWriteLoopAsync(
+            IClientStreamWriter<FromWorker> requestStream,
+            CancellationToken cancellationToken)
+        {
+            LogHelper.Debug("启动双向流写循环");
+
+            await foreach (var message in _sendChannel!.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    await requestStream.WriteAsync(message, cancellationToken).ConfigureAwait(false);
+                    LogHelper.Debug($"成功向Master发送消息，类型: {message.MessageCase}");
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.Error(ex, "向Master写入消息失败");
+                    throw;
+                }
+            }
+
+            LogHelper.Debug("双向流写循环结束");
+        }
+
+        private async Task StartHeartbeatLoopAsync(CancellationToken cancellationToken)
+        {
+            LogHelper.Info($"启动心跳上报循环，间隔: {_grpcSettings.HeartbeatIntervalSeconds}秒");
+            _heartbeatTimer = new PeriodicTimer(TimeSpan.FromSeconds(_grpcSettings.HeartbeatIntervalSeconds));
+
+            try
+            {
+                await SendHeartbeatAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await _heartbeatTimer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    await SendHeartbeatAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                LogHelper.Info("心跳上报循环被取消");
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, "心跳上报循环异常");
+                throw;
+            }
+            finally
+            {
+                _heartbeatTimer?.Dispose();
+                _heartbeatTimer = null;
+                LogHelper.Info("心跳上报循环已停止");
+            }
+        }
+
+        /// <summary>
+        /// 修复竞态窗口，原子化校验+写入全流程
+        /// </summary>
+        public async Task<bool> SendMessageAsync(FromWorker message, CancellationToken cancellationToken = default)
+        {
+            if (message == null)
+            {
+                LogHelper.Warn("发送消息失败：消息为空");
+                return false;
+            }
+
+            ValueTask writeTask;
+            lock (_streamLock)
+            {
+                if (_sendChannel == null
+                    || Volatile.Read(ref _isStreamRunning) == 0
+                    || _streamCts?.IsCancellationRequested == true
+                    || _sendChannel.Reader.Completion.IsCompleted)
+                {
+                    LogHelper.Warn("发送消息失败：双向流未运行或已关闭");
+                    return false;
+                }
+
+                try
+                {
+                    writeTask = _sendChannel.Writer.WriteAsync(message, cancellationToken);
+
+                    // 如果同步完成，立即返回 true（不会在 await 点释放锁之外的逻辑）
+                    if (writeTask.IsCompletedSuccessfully)
+                    {
+                        LogHelper.Debug($"消息已入队发送队列，类型: {message.MessageCase}");
+                        return true;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    LogHelper.Warn("消息发送被取消");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.Error(ex, "消息入队发送队列失败");
+                    return false;
+                }
+            }
+
+            // 在锁外等待异步完成，避免将锁保持到 await 点
+            try
+            {
+                await writeTask.ConfigureAwait(false);
+                LogHelper.Debug($"消息已入队发送队列，类型: {message.MessageCase}");
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                LogHelper.Warn("消息发送被取消");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, "消息入队发送队列失败");
+                return false;
+            }
+        }
+
+        private async Task SendHeartbeatAsync(CancellationToken cancellationToken)
+        {
+            var heartbeat = await _nodeInfoCollector.CollectHeartbeatAsync(cancellationToken).ConfigureAwait(false);
+            var message = new FromWorker
+            {
+                Heartbeat = heartbeat
+            };
+
+            await SendMessageAsync(message, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task HandleStreamReconnectAsync(CancellationToken stoppingToken)
+        {
+            // 应用关闭时立即终止重连
+            if (stoppingToken.IsCancellationRequested)
+            {
+                LogHelper.Info("应用正在关闭，跳过重连");
+                return;
+            }
+
+            _reconnectAttempts++;
+            LogHelper.Warn($"双向流断开，开始第{_reconnectAttempts}次重连");
+
+            if (_reconnectAttempts > _grpcSettings.MaxRetryAttempts)
+            {
+                LogHelper.Fatal("达到最大重连次数，触发重新注册流程");
+                _sessionManager.ClearSession();
+                _reconnectAttempts = 0;
+
+                try
+                {
+                    var nodeRegistration = await _nodeInfoCollector.CollectNodeRegistrationAsync(stoppingToken).ConfigureAwait(false);
+                    var registrationResponse = await ExecuteRegistrationWithRetryAsync(nodeRegistration, stoppingToken).ConfigureAwait(false);
+
+                    if (registrationResponse != null && registrationResponse.Success)
+                    {
+                        _sessionManager.SaveSession(registrationResponse);
+                        LogHelper.Info($"重新注册成功，SessionId: {registrationResponse.SessionId}");
+
+                        var handler = Volatile.Read(ref _nodeRegistered);
+                        if (handler != null)
+                        {
+                            foreach (Func<NodeRegistration, RegistrationResponse, CancellationToken, Task> subscriber in handler.GetInvocationList())
+                            {
+                                try
+                                {
+                                    await subscriber.Invoke(nodeRegistration, registrationResponse, stoppingToken).ConfigureAwait(false);
+                                }
+                                catch (Exception ex)
+                                {
+                                    LogHelper.Error(ex, "重新注册事件订阅者执行异常");
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        LogHelper.Fatal("重新注册失败，Worker终止运行");
+                        _appLifetime.StopApplication();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.Fatal(ex, "重新注册流程发生致命异常，Worker终止运行");
+                    _appLifetime.StopApplication();
+                }
+                return;
+            }
+
+            await Task.Delay(_grpcSettings.RetryDelayMilliseconds, stoppingToken).ConfigureAwait(false);
+            _grpcClientManager.RecreateChannel();
+            await StartStreamingAsync(stoppingToken).ConfigureAwait(false);
+        }
+
+        private async Task CleanupStreamResourcesAsync()
+        {
+            LogHelper.Info("开始清理双向流资源");
+
+            _heartbeatTimer?.Dispose();
+            _heartbeatTimer = null;
+
+            try { _streamCts?.Cancel(); } catch { }
+
+            lock (_streamLock)
+            {
+                if (_sendChannel != null)
+                {
+                    _sendChannel.Writer.TryComplete();
+                }
+            }
+
+            if (_sendChannel != null)
+            {
+                try
+                {
+                    await _sendChannel.Reader.Completion.WaitAsync(TimeSpan.FromMilliseconds(GrpcConstants.DefaultStreamCloseTimeoutMs)).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    LogHelper.Warn("发送队列等待消费超时");
+                }
+            }
+
+            lock (_streamLock)
+            {
+                _sendChannel = null;
+            }
+
+            _streamCts?.Dispose();
+            _streamCts = null;
+
+            LogHelper.Info("双向流资源清理完成");
+        }
+        #endregion
+
+        #region 注册流程方法
+        private bool ValidateNodeRegistration(NodeRegistration registration)
+        {
+            if (string.IsNullOrWhiteSpace(registration.NodeId))
+            {
+                LogHelper.Error("节点注册参数校验失败：NodeId不能为空");
+                return false;
+            }
+            if (registration.NodeId.Length > GrpcConstants.MaxNodeIdLength)
+            {
+                LogHelper.Error($"节点注册参数校验失败：NodeId长度不能超过{GrpcConstants.MaxNodeIdLength}字符");
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(registration.MachineName))
+            {
+                LogHelper.Error("节点注册参数校验失败：MachineName不能为空");
+                return false;
+            }
+            if (registration.CpuCores <= 0)
+            {
+                LogHelper.Error("节点注册参数校验失败：CpuCores必须大于0");
+                return false;
+            }
+            if (registration.TotalMemoryGb < 0)
+            {
+                LogHelper.Error("节点注册参数校验失败：TotalMemoryGb不能为负数");
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(registration.IpAddress))
+            {
+                LogHelper.Warn("节点IP地址为空，使用默认值127.0.0.1");
+                registration.IpAddress = "127.0.0.1";
+            }
+            return true;
+        }
+
+        private async Task<RegistrationResponse?> ExecuteRegistrationWithRetryAsync(
+            NodeRegistration nodeRegistration,
+            CancellationToken cancellationToken)
+        {
+            var maxRetryAttempts = _grpcSettings.MaxRetryAttempts;
+            var retryDelayMs = _grpcSettings.RetryDelayMilliseconds;
+            RegistrationResponse? response = null;
+
+            using var totalTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(maxRetryAttempts * 10));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, totalTimeoutCts.Token);
+
+            for (var attempt = 1; attempt <= maxRetryAttempts; attempt++)
+            {
+                linkedCts.Token.ThrowIfCancellationRequested();
+
+                try
+                {
+                    LogHelper.Info($"开始节点注册，第{attempt}次尝试，NodeId: {nodeRegistration.NodeId}");
+
+                    var headers = new Metadata
+                    {
+                        { "authorization", $"Bearer {_grpcSettings.NodeAuthToken}" },
+                        { "node-id", nodeRegistration.NodeId }
+                    };
+
+                    var deadline = DateTime.UtcNow.AddSeconds(10);
+                    response = await _grpcClientManager.CoordinatorClient.RegisterNodeAsync(
+                        nodeRegistration,
+                        headers,
+                        deadline: deadline,
+                        cancellationToken: linkedCts.Token).ConfigureAwait(false);
+
+                    if (response.Success)
+                    {
+                        LogHelper.Info($"节点注册成功，第{attempt}次尝试完成");
+                        return response;
+                    }
+
+                    LogHelper.Error($"节点注册被拒绝，原因: {response.Message}");
+                    _sessionManager.ClearSession();
+                    return response;
+                }
+                catch (RpcException ex) when (ex.StatusCode is StatusCode.Unauthenticated or StatusCode.AlreadyExists or StatusCode.InvalidArgument)
+                {
+                    LogHelper.Fatal(ex, "节点注册发生不可重试异常，终止重试");
+                    _sessionManager.ClearSession();
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.Warn($"节点注册第{attempt}次尝试失败");
+
+                    if (attempt >= maxRetryAttempts)
+                    {
+                        LogHelper.Fatal(ex, "节点注册达到最大重试次数，注册失败");
+                        _sessionManager.ClearSession();
+                        return null;
+                    }
+
+                    await Task.Delay(retryDelayMs, linkedCts.Token).ConfigureAwait(false);
+                }
+            }
+
+            return response;
+        }
+
+        public override async Task StopAsync(CancellationToken cancellationToken)
+        {
+            LogHelper.Info("Worker节点开始优雅关闭");
+
+            await CleanupStreamResourcesAsync().ConfigureAwait(false);
+            await _grpcClientManager.ShutdownAsync(cancellationToken).ConfigureAwait(false);
+            _sessionManager.ClearSession();
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+
+            LogHelper.Info("Worker节点优雅关闭完成");
+        }
+        #endregion
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+
+            lock (_eventLock)
+            {
+                _nodeRegistered = null;
+                _streamConnected = null;
+                _streamDisconnected = null;
+                _newTaskReceived = null;
+                _taskControlReceived = null;
+                _systemConfigReceived = null;
+            }
+
+            CleanupStreamResourcesAsync().Wait();
+            _grpcClientManager.Dispose();
+
+            _disposed = true;
+            GC.SuppressFinalize(this);
+        }
+
+        ~WorkerHostedService()
+        {
+            Dispose();
+        }
     }
-
-    /// <summary>
-    /// 优雅关闭顺序：先释放资源，再调用基类StopAsync，确保资源完整释放
-    /// </summary>
-    public override async Task StopAsync(CancellationToken cancellationToken)
-    {
-        _logger.LogInformation("Worker节点开始优雅关闭");
-
-        // 1. 关闭gRPC客户端通道
-        await _grpcClientManager.ShutdownAsync(cancellationToken).ConfigureAwait(false);
-
-        // 2. 清除会话信息
-        _sessionManager.ClearSession();
-
-        // 3. 最后调用基类StopAsync，取消执行令牌
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
-
-        _logger.LogInformation("Worker节点优雅关闭完成");
-    }
-
-    // 常量定义
-    private const int MaxNodeIdLength = 128;
 }

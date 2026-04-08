@@ -22,9 +22,10 @@ public class NodeRegistrationTests
         // Arrange
         var expectedNodeId = "worker-fixed-001";
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", expectedNodeId);
+        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance);
 
         // Act
-        var nodeId = _nodeInfoCollector.GetNodeId();
+        var nodeId = collector.GetNodeId();
 
         // Assert
         Assert.Equal(expectedNodeId, nodeId);
@@ -53,9 +54,10 @@ public class NodeRegistrationTests
         // Arrange
         var longNodeId = new string('a', 200);
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", longNodeId);
+        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance);
 
         // Act
-        var nodeId = _nodeInfoCollector.GetNodeId();
+        var nodeId = collector.GetNodeId();
 
         // Assert
         Assert.Equal(128, nodeId.Length);
@@ -70,10 +72,11 @@ public class NodeRegistrationTests
         // Arrange
         var invalidNodeId = "worker@#$%^&*()_+123";
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", invalidNodeId);
+        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance);
         var expectedNodeId = "worker___________123";
 
         // Act
-        var nodeId = _nodeInfoCollector.GetNodeId();
+        var nodeId = collector.GetNodeId();
 
         // Assert
         Assert.Equal(expectedNodeId, nodeId);

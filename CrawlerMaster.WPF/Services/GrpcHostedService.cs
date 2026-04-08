@@ -1,4 +1,5 @@
 ﻿using CrawlerCore.Infrastructure;
+using CrawlerCore.Infrastructure.Constants;
 using CrawlerCore.Protos;
 using CrawlerMaster.WPF.Infrastructure;
 using Grpc.Core;
@@ -16,14 +17,14 @@ using System.Threading.Tasks;
 
 namespace CrawlerMaster.WPF.Services
 {
-    public class GrpcHostedService : IHostedService
+    public class GrpcHostedService : IHostedService, IDisposable
     {
         private readonly ILogger<GrpcHostedService> _logger;
         private readonly GrpcSettings _grpcSettings;
         private readonly CrawlerCoordinator.CrawlerCoordinatorBase _coordinatorService;
         private readonly GrpcAuthenticationInterceptor _interceptor;
         private Server? _server;
-        private CancellationTokenSource? _cts;   // 用于取消流式调用
+        private bool _disposed = false;
 
         public GrpcHostedService(
             ILogger<GrpcHostedService> logger,
@@ -31,21 +32,24 @@ namespace CrawlerMaster.WPF.Services
             CrawlerCoordinator.CrawlerCoordinatorBase coordinatorService,
             GrpcAuthenticationInterceptor interceptor)
         {
-            _logger = logger;
-            _grpcSettings = grpcSettingsOptions.Value;
-            _coordinatorService = coordinatorService;
-            _interceptor = interceptor;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _grpcSettings = grpcSettingsOptions.Value ?? throw new ArgumentNullException(nameof(grpcSettingsOptions));
+            _coordinatorService = coordinatorService ?? throw new ArgumentNullException(nameof(coordinatorService));
+            _interceptor = interceptor ?? throw new ArgumentNullException(nameof(interceptor));
+
+            // 前置配置校验
+            if (string.IsNullOrWhiteSpace(_grpcSettings.MasterEndpoint))
+            {
+                throw new ArgumentException("MasterEndpoint配置不能为空", nameof(grpcSettingsOptions));
+            }
         }
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("启动 gRPC 服务器...");
 
-            // 创建 CancellationTokenSource（供后续流式方法使用）
-            _cts = new CancellationTokenSource();
-
-            var (host, port) = ParseEndpoint(_grpcSettings.MasterEndpoint);
-            _logger.LogDebug("解析地址: Host={Host}, Port={Port}", host, port);
+            var (host, port, useTls) = ParseEndpoint(_grpcSettings.MasterEndpoint);
+            _logger.LogDebug("解析监听地址: Host={Host}, Port={Port}, UseTls={UseTls}", host, port, useTls);
 
             CheckPortAvailable(host, port);
 
@@ -61,9 +65,24 @@ namespace CrawlerMaster.WPF.Services
                 new ChannelOption("grpc.default_compression_level", "balanced")
             };
 
+            // 修复TLS凭证逻辑，正确适配HTTP/HTTPS
+            ServerCredentials serverCredentials;
+            if (useTls)
+            {
+                // 如需TLS加密，在此处替换为你的证书配置
+                // var keyPair = new KeyCertificatePair(File.ReadAllText("server.crt"), File.ReadAllText("server.key"));
+                // serverCredentials = new SslServerCredentials(new List<KeyCertificatePair> { keyPair });
+                serverCredentials = ServerCredentials.Insecure;
+                _logger.LogWarning("当前使用HTTPS端点但未配置TLS证书，已降级为Insecure模式，生产环境请配置正式证书");
+            }
+            else
+            {
+                serverCredentials = ServerCredentials.Insecure;
+            }
+
             _server = new Server(options)
             {
-                Ports = { new ServerPort(host, port, ServerCredentials.Insecure) },
+                Ports = { new ServerPort(host, port, serverCredentials) },
                 Services =
                 {
                     CrawlerCoordinator.BindService(_coordinatorService)
@@ -73,10 +92,6 @@ namespace CrawlerMaster.WPF.Services
 
             _server.Start();
             _logger.LogInformation("gRPC 服务器已启动，监听 {Host}:{Port}", host, port);
-
-            // 若有流式方法，可将 _cts.Token 传入，例如：
-            // _coordinatorService.StartStreaming(_cts.Token);
-
             return Task.CompletedTask;
         }
 
@@ -84,97 +99,140 @@ namespace CrawlerMaster.WPF.Services
         {
             _logger.LogInformation("正在关闭 gRPC 服务器...");
 
-            // 1. 取消所有流式调用
-            if (_cts != null)
-            {
-                _logger.LogDebug("取消流式调用 CancellationTokenSource");
-                _cts.Cancel();
-            }
-
-            // 2. 优雅关闭 gRPC 服务器，最多等待 5 秒
             if (_server != null)
             {
                 try
                 {
-                    // 创建链接源：同时响应外部取消和 5 秒超时
                     using var shutdownCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    shutdownCts.CancelAfter(TimeSpan.FromSeconds(5));
+                    shutdownCts.CancelAfter(TimeSpan.FromSeconds(GrpcConstants.DefaultGracefulShutdownTimeoutSeconds));
                     await _server.ShutdownAsync().WaitAsync(shutdownCts.Token);
                     _logger.LogInformation("gRPC 服务器已正常关闭");
                 }
                 catch (OperationCanceledException)
                 {
-                    _logger.LogWarning("关闭 gRPC 服务器超时（5秒），强制停止");
+                    _logger.LogWarning("关闭 gRPC 服务器超时，强制停止");
+                    await _server.KillAsync();
                 }
                 finally
                 {
                     _server = null;
                 }
             }
-
-            // 3. 释放 CancellationTokenSource
-            _cts?.Dispose();
-            _cts = null;
         }
 
-        private (string host, int port) ParseEndpoint(string endpoint)
+        /// <summary>
+        /// 修复端点解析，兼容IPv4/IPv6/域名全格式
+        /// </summary>
+        private (string host, int port, bool useTls) ParseEndpoint(string endpoint)
         {
-            var trimmed = endpoint;
-            if (trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                trimmed = trimmed.Substring(8);
-            else if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-                trimmed = trimmed.Substring(7);
+            bool useTls = false;
+            string trimmedEndpoint = endpoint;
 
-            var parts = trimmed.Split(':');
-            if (parts.Length != 2)
-                throw new ArgumentException($"无效的 MasterEndpoint 格式: {endpoint}，应为 'host:port'");
+            // 解析协议
+            if (trimmedEndpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmedEndpoint = trimmedEndpoint.Substring(8);
+                useTls = true;
+            }
+            else if (trimmedEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmedEndpoint = trimmedEndpoint.Substring(7);
+                useTls = false;
+            }
 
-            var host = parts[0];
-            if (string.IsNullOrWhiteSpace(host))
-                host = "0.0.0.0";
+            string host;
+            int port;
 
-            if (!int.TryParse(parts[1], out var port) || port <= 0 || port > 65535)
-                throw new ArgumentException($"无效的端口号: {parts[1]}");
+            // 处理IPv6地址（带方括号）
+            if (trimmedEndpoint.StartsWith("[", StringComparison.Ordinal))
+            {
+                var closingBracketIndex = trimmedEndpoint.IndexOf(']');
+                if (closingBracketIndex == -1)
+                    throw new ArgumentException($"无效的IPv6地址格式: {endpoint}");
 
-            return (host, port);
+                host = trimmedEndpoint.Substring(1, closingBracketIndex - 1);
+                var portPart = trimmedEndpoint.Substring(closingBracketIndex + 1);
+
+                if (!portPart.StartsWith(":"))
+                    throw new ArgumentException($"无效的端点格式，缺少端口: {endpoint}");
+
+                if (!int.TryParse(portPart.Substring(1), out port) || port <= 0 || port > 65535)
+                    throw new ArgumentException($"无效的端口号: {portPart.Substring(1)}");
+            }
+            // 处理IPv4/域名
+            else
+            {
+                var parts = trimmedEndpoint.Split(':');
+                if (parts.Length != 2)
+                    throw new ArgumentException($"无效的端点格式: {endpoint}，应为 'scheme://host:port'");
+
+                host = parts[0];
+                if (!int.TryParse(parts[1], out port) || port <= 0 || port > 65535)
+                    throw new ArgumentException($"无效的端口号: {parts[1]}");
+            }
+
+            // 兼容0.0.0.0监听地址
+            if (string.IsNullOrWhiteSpace(host) || host == "0.0.0.0" || host == "[::]")
+                host = IPAddress.Any.ToString();
+
+            return (host, port, useTls);
         }
 
+        /// <summary>
+        /// 修复端口检查，兼容IPv6，避免系统不支持IPv6时启动失败
+        /// </summary>
         private void CheckPortAvailable(string host, int port)
         {
             try
             {
-                var addressesToCheck = new List<IPAddress>();
-                if (host == "localhost")
+                IPAddress[] addresses;
+                if (host == IPAddress.Any.ToString() || host == IPAddress.IPv6Any.ToString())
                 {
-                    addressesToCheck.Add(IPAddress.Loopback);
-                    addressesToCheck.Add(IPAddress.IPv6Loopback);
-                }
-                else if (host == "0.0.0.0" || host == "*")
-                {
-                    addressesToCheck.Add(IPAddress.Any);
+                    addresses = new[] { IPAddress.Any, IPAddress.IPv6Any };
                 }
                 else
                 {
                     var entry = Dns.GetHostEntry(host);
-                    addressesToCheck.AddRange(entry.AddressList);
+                    addresses = entry.AddressList;
                 }
-                foreach (var ip in addressesToCheck.Distinct())
+
+                foreach (var ip in addresses.Distinct())
                 {
-                    using var listener = new TcpListener(ip, port);
-                    listener.Start();
-                    listener.Stop();
-                    _logger.LogDebug("端口 {Port} 可用", port);
+                    try
+                    {
+                        using var listener = new TcpListener(ip, port);
+                        listener.Start();
+                        listener.Stop();
+                        _logger.LogDebug("端口 {Port} 在地址 {Ip} 可用", port, ip);
+                    }
+                    catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
+                    {
+                        _logger.LogError(ex, "端口 {Port} 在地址 {Ip} 已被占用", port, ip);
+                        throw new InvalidOperationException($"端口 {port} 已被占用，请修改配置或释放端口", ex);
+                    }
+                    catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressFamilyNotSupported)
+                    {
+                        _logger.LogDebug("地址 {Ip} 协议不支持，跳过", ip);
+                    }
                 }
             }
-            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
-            {
-                _logger.LogError(ex, "端口 {Port} 已被占用", port);
-                throw new InvalidOperationException($"端口 {port} 已被占用，请修改配置或释放端口", ex);
-            }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not InvalidOperationException)
             {
                 _logger.LogWarning(ex, "端口可用性检查异常，将继续尝试启动服务");
             }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _server?.KillAsync().Wait();
+            _disposed = true;
+            GC.SuppressFinalize(this);
+        }
+
+        ~GrpcHostedService()
+        {
+            Dispose();
         }
     }
 }

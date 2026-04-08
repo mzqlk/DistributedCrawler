@@ -36,7 +36,7 @@ namespace CrawlerCore.Tests.Grpc
                 MasterEndpoint = "127.0.0.1:0" // 动态端口
             };
             var options = Options.Create(_grpcSettings);
-            _sessionManager = new SessionManager();
+            _sessionManager = new SessionManager(NullLogger<SessionManager>.Instance);
 
             // 创建服务实例（注意：此处使用 NullLogger，事件测试时使用真实实例）
             _service = new CrawlerCoordinatorService(
@@ -171,7 +171,7 @@ namespace CrawlerCore.Tests.Grpc
             // Assert
             Assert.True(response1.Success);
             Assert.False(response2.Success);
-            Assert.Equal("Node already registered or registration conflict", response2.Message);
+            Assert.Equal("Node already has an active session", response2.Message);
         }
 
         /// <summary>
@@ -183,7 +183,7 @@ namespace CrawlerCore.Tests.Grpc
             // Arrange
             // 创建一个新的事件可测试的服务实例
             var eventService = new CrawlerCoordinatorService(
-                new SessionManager(),
+                new SessionManager(NullLogger<SessionManager>.Instance),
                 Options.Create(_grpcSettings),
                 NullLogger<CrawlerCoordinatorService>.Instance);
             NodeRegistration receivedRegistration = null;
