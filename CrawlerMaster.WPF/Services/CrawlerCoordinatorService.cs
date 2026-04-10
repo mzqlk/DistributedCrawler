@@ -1,14 +1,16 @@
-﻿using CrawlerCore.Infrastructure;
+﻿using CrawlerCore.Entities;
+using CrawlerCore.Infrastructure;
 using CrawlerCore.Infrastructure.Constants;
+using CrawlerCore.Interfaces;
 using CrawlerCore.Protos;
 using Grpc.Core;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
-using System.Threading;
 
 namespace CrawlerMaster.WPF.Services
 {
@@ -21,6 +23,7 @@ namespace CrawlerMaster.WPF.Services
         private readonly SessionManager _sessionManager;
         private readonly GrpcSettings _grpcSettings;
         private readonly ILogger<CrawlerCoordinatorService> _logger;
+        private readonly INodeManagementService _nodeManagementService;
         private readonly ConcurrentDictionary<string, NodeStreamContext> _nodeStreamContexts = new();
         private readonly object _eventLock = new();
         private bool _disposed = false;
@@ -61,8 +64,8 @@ namespace CrawlerMaster.WPF.Services
             remove { lock (_eventLock) _logEntryReceived -= value; }
         }
 
-        private Action<string, CrawlResult>? _crawlResultReceived;
-        public event Action<string, CrawlResult>? CrawlResultReceived
+        private Action<string, CrawlerCore.Protos.CrawlResult>? _crawlResultReceived;
+        public event Action<string, CrawlerCore.Protos.CrawlResult>? CrawlResultReceived
         {
             add { lock (_eventLock) _crawlResultReceived += value; }
             remove { lock (_eventLock) _crawlResultReceived -= value; }
@@ -78,10 +81,12 @@ namespace CrawlerMaster.WPF.Services
 
         public CrawlerCoordinatorService(
             SessionManager sessionManager,
+            INodeManagementService nodeManagementService,
             IOptions<GrpcSettings> grpcSettingsOptions,
             ILogger<CrawlerCoordinatorService> logger)
         {
             _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
+            _nodeManagementService = nodeManagementService ?? throw new ArgumentNullException(nameof(nodeManagementService));
             _grpcSettings = grpcSettingsOptions?.Value ?? throw new ArgumentNullException(nameof(grpcSettingsOptions));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
@@ -111,6 +116,36 @@ namespace CrawlerMaster.WPF.Services
                 {
                     Success = false,
                     Message = "Node already has an active session"
+                });
+            }
+
+            try
+            {
+                // 将 gRPC 请求对象 映射为 数据库实体
+                var nodeInfo = new NodeInfo
+                {
+                    NodeId = request.NodeId,
+                    MachineName = request.MachineName,
+                    IpAddress = request.IpAddress,
+                    CpuCores = request.CpuCores,
+                    TotalMemoryGb = request.TotalMemoryGb,
+                    LastHeartbeat = DateTime.UtcNow,
+                    Status = NodeStatus.Online
+                };
+
+                // 调用数据库注册方法（存在则更新状态，不存在则新增）
+                _nodeManagementService.RegisterNodeAsync(nodeInfo);
+                _logger.LogInformation($"节点 {request.NodeId} 已持久化到数据库");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"节点 {request.NodeId} 数据库持久化失败");
+                // 可选：数据库失败则拒绝注册（保证一致性）
+                _sessionManager.RemoveSession(request.NodeId);
+                return Task.FromResult(new RegistrationResponse
+                {
+                    Success = false,
+                    Message = "Database registration failed"
                 });
             }
 
@@ -253,6 +288,20 @@ namespace CrawlerMaster.WPF.Services
                 _nodeStreamContexts.TryRemove(nodeId, out _);
                 _sessionManager.UpdateSessionLastActiveAt(nodeId);
 
+                // 异步标记离线（放入后台任务，不阻塞finally，无语法错误）
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _nodeManagementService.MarkSingleNodeAsOfflineAsync(nodeId);
+                        _logger.LogInformation($"节点 {nodeId} 已手动标记为离线");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"标记节点 {nodeId} 离线失败");
+                    }
+                });
+
                 // 触发流断开事件
                 var disconnectedHandler = Volatile.Read(ref _streamDisconnected);
                 if (disconnectedHandler != null)
@@ -338,6 +387,7 @@ namespace CrawlerMaster.WPF.Services
                         var hb = message.Heartbeat;
                         _logger.LogInformation(
                             $"收到节点 {nodeId} 心跳: CPU={hb.CpuUsage:F2}%, 内存={hb.MemoryUsageMb:F2}MB, 活跃任务={hb.ActiveTasks}");
+                        _  =  _nodeManagementService.UpdateNodeHeartbeatAsync(nodeId);
                         var hbHandler = Volatile.Read(ref _heartbeatReceived);
                         if (hbHandler != null)
                         {
@@ -383,7 +433,7 @@ namespace CrawlerMaster.WPF.Services
                         var resultHandler = Volatile.Read(ref _crawlResultReceived);
                         if (resultHandler != null)
                         {
-                            foreach (Action<string, CrawlResult> subscriber in resultHandler.GetInvocationList())
+                            foreach (Action<string, CrawlerCore.Protos.CrawlResult> subscriber in resultHandler.GetInvocationList())
                             {
                                 try
                                 {

@@ -9,13 +9,25 @@ namespace CrawlerMaster.WPF
     public partial class MainWindow : Window
     {
         private readonly CrawlerDbContext _dbContext;
+        private readonly MainWindowViewModel _viewModel;
 
         public MainWindow(MainWindowViewModel viewModel)
         {
             InitializeComponent();
             //_dbContext = dbContext;
+            _viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
             DataContext = viewModel;
+
+            // 绑定刷新按钮事件
+            RefreshButton.Click += async (s, e) => await _viewModel.LoadNodesAsync();
             //_ = TestDatabaseAsync();
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            // 清理 ViewModel 资源
+            _viewModel.Dispose();
+            base.OnClosed(e);
         }
 
         private async Task TestDatabaseAsync()

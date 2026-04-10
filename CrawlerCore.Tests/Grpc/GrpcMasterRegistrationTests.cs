@@ -2,12 +2,14 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using CrawlerCore.Infrastructure;
+using CrawlerCore.Interfaces;
 using CrawlerCore.Protos;
 using CrawlerMaster.WPF.Services;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace CrawlerCore.Tests.Grpc
@@ -39,8 +41,10 @@ namespace CrawlerCore.Tests.Grpc
             _sessionManager = new SessionManager(NullLogger<SessionManager>.Instance);
 
             // 创建服务实例（注意：此处使用 NullLogger，事件测试时使用真实实例）
+            var mockNodeMgmt = new Mock<INodeManagementService>();
             _service = new CrawlerCoordinatorService(
                 _sessionManager,
+                mockNodeMgmt.Object,
                 options,
                 NullLogger<CrawlerCoordinatorService>.Instance);
 
@@ -182,10 +186,12 @@ namespace CrawlerCore.Tests.Grpc
         {
             // Arrange
             // 创建一个新的事件可测试的服务实例
+            var mockNodeMgmt = new Mock<INodeManagementService>();
             var eventService = new CrawlerCoordinatorService(
-                new SessionManager(NullLogger<SessionManager>.Instance),
-                Options.Create(_grpcSettings),
-                NullLogger<CrawlerCoordinatorService>.Instance);
+    new SessionManager(NullLogger<SessionManager>.Instance),
+    mockNodeMgmt.Object,
+    Options.Create(_grpcSettings),
+    NullLogger<CrawlerCoordinatorService>.Instance);
             NodeRegistration receivedRegistration = null;
             var tcs = new TaskCompletionSource<bool>();
 

@@ -1,12 +1,52 @@
-﻿<Window x:Class="CrawlerMaster.WPF.MainWindow"
+﻿<!-- MainWindow.xaml -->
+<Window x:Class="CrawlerMaster.WPF.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:CrawlerMaster.WPF"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
+        Title="分布式爬虫管理系统" Height="450" Width="1000">
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
 
+        <!-- 工具栏 -->
+        <ToolBar Grid.Row="0" Margin="5">
+            <Button x:Name="RefreshButton" Content="刷新节点列表" Margin="5" Padding="10,5"/>
+        </ToolBar>
+
+        <!-- 节点列表 -->
+        <DataGrid Grid.Row="1" ItemsSource="{Binding Nodes}" AutoGenerateColumns="False" 
+                  Margin="10" IsReadOnly="True" CanUserAddRows="False">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="节点ID" Binding="{Binding NodeId}" Width="*"/>
+                <DataGridTextColumn Header="机器名" Binding="{Binding MachineName}" Width="*"/>
+                <DataGridTextColumn Header="IP地址" Binding="{Binding IpAddress}" Width="*"/>
+                <DataGridTextColumn Header="CPU核心" Binding="{Binding CpuCores}" Width="80"/>
+                <DataGridTextColumn Header="总内存(GB)" Binding="{Binding TotalMemoryGb, StringFormat={}{0:F2}}" Width="100"/>
+                <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="80">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Status}" Value="Online">
+                                    <Setter Property="Foreground" Value="Green"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="Offline">
+                                    <Setter Property="Foreground" Value="Red"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="Pending">
+                                    <Setter Property="Foreground" Value="Orange"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="CPU使用率" Binding="{Binding CpuUsage, StringFormat={}{0:F1}%}" Width="100"/>
+                <DataGridTextColumn Header="内存使用(MB)" Binding="{Binding MemoryUsageMb, StringFormat={}{0:F0}}" Width="120"/>
+                <DataGridTextColumn Header="最后心跳" Binding="{Binding LastHeartbeat, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="180"/>
+            </DataGrid.Columns>
+        </DataGrid>
     </Grid>
 </Window>

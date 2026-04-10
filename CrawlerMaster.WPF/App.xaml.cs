@@ -1,4 +1,5 @@
 ﻿using CrawlerCore.Entities;
+using CrawlerCore.Events;
 using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
 using CrawlerCore.Protos;
@@ -159,7 +160,7 @@ namespace CrawlerMaster.WPF
 
         private void ConfigureServices(HostBuilderContext context, IServiceCollection services)
         {
-            // Host.CreateDefaultBuilder 已自动注册 IConfiguration，无需重复添加
+            services.AddSingleton<IEventAggregator, EventAggregator>();
 
             services.Configure<GrpcSettings>(context.Configuration.GetSection("GrpcSettings"));
 

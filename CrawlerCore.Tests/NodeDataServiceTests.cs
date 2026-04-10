@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Moq;
 using Xunit;
 using Microsoft.Data.Sqlite;
+using CrawlerCore.Events;
 
 namespace CrawlerCore.Tests.Services
 {
@@ -28,7 +29,9 @@ namespace CrawlerCore.Tests.Services
 
             _dbContext = new CrawlerDbContext(options, mockConfig.Object);
             _dbContext.Database.EnsureCreated();
-            _nodeService = new NodeManagementService(_dbContext);
+
+            var mockEventAggregator = new Mock<IEventAggregator>(); // 新增：为 IEventAggregator 创建 Mock
+            _nodeService = new NodeManagementService(_dbContext, mockEventAggregator.Object);
         }
 
         [Fact]
@@ -47,8 +50,13 @@ namespace CrawlerCore.Tests.Services
         [Fact]
         public async Task GetActiveNodesAsync_OnlyReturnOnlineNodes()
         {
+            // 注册一个在线节点（会被强制设为 Online）
             await _nodeService.RegisterNodeAsync(new NodeInfo { NodeId = "N1", Status = NodeStatus.Online });
-            await _nodeService.RegisterNodeAsync(new NodeInfo { NodeId = "N2", Status = NodeStatus.Offline });
+
+            // 直接插入一个离线节点，避免被 RegisterNodeAsync 改写状态
+            await _dbContext.NodeInfos.AddAsync(new NodeInfo { NodeId = "N2", Status = NodeStatus.Offline });
+            await _dbContext.SaveChangesAsync();
+
             var activeNodes = await _nodeService.GetActiveNodesAsync();
             Assert.Single(activeNodes);
         }
