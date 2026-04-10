@@ -12,11 +12,11 @@ namespace CrawlerMaster.WPF.Services
     /// <summary>
     /// 节点管理数据服务实现
     /// </summary>
-    public class NodeDataService : INodeManagementService
+    public class NodeManagementService : INodeManagementService
     {
         private readonly CrawlerDbContext _dbContext;
 
-        public NodeDataService(CrawlerDbContext dbContext)
+        public NodeManagementService(CrawlerDbContext dbContext)
         {
             _dbContext = dbContext;
         }
@@ -79,6 +79,27 @@ namespace CrawlerMaster.WPF.Services
                 .ToListAsync();
 
             _dbContext.NodeInfos.RemoveRange(inactiveNodes);
+            return await _dbContext.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// 将超时无心跳的节点标记为离线
+        /// </summary>
+        public async Task<int> MarkInactiveNodesAsOfflineAsync(TimeSpan timeout)
+        {
+            var cutoffTime = DateTime.UtcNow - timeout;
+            var inactiveNodes = await _dbContext.NodeInfos
+                .Where(n => n.Status == NodeStatus.Online && n.LastHeartbeat < cutoffTime)
+                .ToListAsync();
+
+            if (inactiveNodes.Count == 0)
+                return 0;
+
+            foreach (var node in inactiveNodes)
+            {
+                node.Status = NodeStatus.Offline;
+            }
+
             return await _dbContext.SaveChangesAsync();
         }
     }

@@ -1,0 +1,24 @@
+services:
+  crawler-worker:
+    build:
+      context: .
+      dockerfile: CrawlerWorker/Dockerfile
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    environment:
+      - NODE_AUTH_TOKEN=test-token
+      - MASTER_ENDPOINT=http://host.docker.internal:5001
+      - WORKER_ENDPOINT=http://0.0.0.0:5002
+      - DOTNET_ENVIRONMENT=Production
+    volumes:
+      - ./CrawlerWorker/appsettings.json:/app/appsettings.json:ro
+    networks:
+      - crawler-network
+    restart: unless-stopped
+
+networks:
+  crawler-network:
+    driver: bridge

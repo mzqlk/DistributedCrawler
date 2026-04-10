@@ -14,19 +14,14 @@ using System.Threading.Tasks;
 namespace CrawlerWorker.Services
 {
     /// <summary>
-    /// 节点信息采集实现，融合版本优点：
-    /// - 容器 cgroup v2 感知 (CPU/内存限制)
-    /// - 健壮的节点 ID 清洗与注入
-    /// - 高精度跨平台 CPU 采样算法
-    /// - 多层 IP 兜底机制
-    /// - 标准 ILogger 日志集成
+    /// 节点信息采集实现
     /// </summary>
     public class NodeInfoCollector : INodeInfoCollector
     {
         private readonly ILogger<NodeInfoCollector> _logger;
         private readonly string _nodeId;
 
-        // CPU 采样状态 (版本A的精确算法)
+        // CPU 采样状态
         private readonly object _cpuLock = new();
         private DateTime _lastCpuCheckTime = DateTime.UtcNow;
         private long _lastIdleTime;
@@ -95,7 +90,7 @@ namespace CrawlerWorker.Services
 
         #endregion
 
-        #region 节点 ID 规范化 (版本B增强)
+        #region 节点 ID 规范化
 
         private string GenerateNormalizedNodeId()
         {
@@ -130,7 +125,7 @@ namespace CrawlerWorker.Services
 
         #endregion
 
-        #region CPU 核心数 (版本B: 容器感知)
+        #region CPU 核心数
 
         private int GetCpuCoreCount()
         {
@@ -173,7 +168,7 @@ namespace CrawlerWorker.Services
 
         #endregion
 
-        #region 总内存 (版本B: 容器感知 + 版本A: Windows API)
+        #region 总内存
 
         private async Task<double> GetTotalMemoryGbAsync(CancellationToken cancellationToken)
         {
@@ -248,7 +243,7 @@ namespace CrawlerWorker.Services
 
         #endregion
 
-        #region IP 地址采集 (版本B: 多层兜底)
+        #region IP 地址采集
 
         private async Task<string> GetLocalIpAddressAsync(CancellationToken cancellationToken)
         {
@@ -298,7 +293,7 @@ namespace CrawlerWorker.Services
 
         #endregion
 
-        #region CPU 使用率 (版本A: 精确多核采样 + 时间回退处理)
+        #region CPU 使用率
 
         private async Task<double> GetSystemCpuUsageAsync()
         {
@@ -422,7 +417,7 @@ namespace CrawlerWorker.Services
 
         #endregion
 
-        #region 内存使用量 (版本A逻辑 + 容器感知)
+        #region 内存使用量
 
         private async Task<double> GetSystemMemoryUsageMbAsync(CancellationToken cancellationToken)
         {
@@ -503,7 +498,7 @@ namespace CrawlerWorker.Services
 
         #endregion
 
-        #region 磁盘使用率 (版本A，优化路径获取)
+        #region 磁盘使用率
 
         private double GetDiskUsagePercent()
         {

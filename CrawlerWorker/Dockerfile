@@ -1,5 +1,5 @@
 # 完全对齐原项目官方Worker Dockerfile规范，.NET 10兼容
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS base
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
 WORKDIR /app
 EXPOSE 5002
 

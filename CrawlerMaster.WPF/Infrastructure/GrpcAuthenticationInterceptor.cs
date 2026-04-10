@@ -98,7 +98,7 @@ namespace CrawlerMaster.WPF.Infrastructure
         private void Authenticate(ServerCallContext context)
         {
             // 从元数据中获取 Authorization 头
-            var authHeader = context.RequestHeaders.FirstOrDefault(m => m.Key == "Authorization")?.Value;
+            var authHeader = context.RequestHeaders.FirstOrDefault(m => m.Key == "authorization")?.Value;
             if (string.IsNullOrEmpty(authHeader))
             {
                 _logger.LogWarning("缺少 Authorization 头，客户端: {Peer}", context.Peer);

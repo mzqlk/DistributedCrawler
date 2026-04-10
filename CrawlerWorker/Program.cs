@@ -49,6 +49,7 @@ try
 
             // 2. gRPC核心服务注册
             services.AddSingleton<IGrpcClientManager, GrpcClientManager>();
+            services.AddSingleton<GrpcClientAuthenticationInterceptor>();
             services.AddSingleton<GrpcAuthenticationInterceptor>();
             services.AddSingleton<IGrpcWorkerServiceFactory, GrpcWorkerServiceFactory>();
 
@@ -106,7 +107,7 @@ Dictionary<string, string> GetOfficialEnvironmentVariableMappings()
     if (!string.IsNullOrWhiteSpace(nodeAuthToken))
     {
         mappings["GrpcSettings:NodeAuthToken"] = nodeAuthToken;
-        Log.Information("使用官方环境变量NODE_AUTH_TOKEN");
+        Log.Information("使用官方环境变量NODE_AUTH_TOKEN: {Token}", nodeAuthToken);
     }
 
     var workerEndpoint = Environment.GetEnvironmentVariable("WORKER_ENDPOINT");

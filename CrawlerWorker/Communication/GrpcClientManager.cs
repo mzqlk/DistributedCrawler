@@ -1,6 +1,7 @@
 ﻿using CrawlerCore.Infrastructure;
 using CrawlerCore.Protos;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using Grpc.Net.Compression;
 using Microsoft.Extensions.Logging;
@@ -10,24 +11,19 @@ using System.Collections.Generic;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
-using System.Net.Security;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace CrawlerWorker.Communication
 {
-    /// <summary>
-    /// 线程安全的 gRPC 客户端管理器，支持通道健康检查、优雅关闭、IPv4/IPv6 全格式。
-    /// 融合了配置灵活性、可观测性与健壮性。
-    /// </summary>
     public sealed class GrpcClientManager : IGrpcClientManager, IDisposable
     {
         private readonly GrpcSettings _grpcSettings;
         private readonly ILogger<GrpcClientManager> _logger;
+        private readonly GrpcClientAuthenticationInterceptor _authInterceptor;
         private readonly object _lockObj = new();
 
-        // 使用 volatile 保证多线程可见性，配合双重检查锁实现懒加载与安全重建
         private volatile GrpcChannel? _channel;
         private volatile CrawlerCoordinator.CrawlerCoordinatorClient? _client;
         private volatile bool _disposed;
@@ -35,18 +31,19 @@ namespace CrawlerWorker.Communication
 
         public GrpcClientManager(
             IOptions<GrpcSettings> grpcSettingsOptions,
-            ILogger<GrpcClientManager> logger)
+            ILogger<GrpcClientManager> logger,
+            GrpcClientAuthenticationInterceptor authInterceptor)
         {
             _grpcSettings = grpcSettingsOptions?.Value ?? throw new ArgumentNullException(nameof(grpcSettingsOptions));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _authInterceptor = authInterceptor ?? throw new ArgumentNullException(nameof(authInterceptor));
 
             if (string.IsNullOrWhiteSpace(_grpcSettings.MasterEndpoint))
                 throw new ArgumentException("MasterEndpoint 配置不能为空", nameof(grpcSettingsOptions));
+
+            _logger.LogInformation("GrpcClientManager 初始化完成，MasterEndpoint: {Endpoint}", _grpcSettings.MasterEndpoint);
         }
 
-        /// <summary>
-        /// 获取 gRPC 客户端实例。线程安全，首次访问时自动创建通道。
-        /// </summary>
         public CrawlerCoordinator.CrawlerCoordinatorClient CoordinatorClient
         {
             get
@@ -64,18 +61,12 @@ namespace CrawlerWorker.Communication
             }
         }
 
-        /// <summary>
-        /// 检查当前通道是否处于就绪状态。
-        /// </summary>
         public bool IsChannelHealthy()
         {
             var channel = _channel;
             return channel != null && channel.State == ConnectivityState.Ready;
         }
 
-        /// <summary>
-        /// 强制重建 gRPC 通道（例如在检测到连接断开后）。
-        /// </summary>
         public void RecreateChannel()
         {
             lock (_lockObj)
@@ -84,19 +75,14 @@ namespace CrawlerWorker.Communication
 
                 _logger.LogInformation("正在重建 gRPC 通道，旧通道将被释放");
 
-                // 释放旧资源
                 _channel?.Dispose();
                 _channel = null;
                 _client = null;
 
-                // 立即创建新通道
                 CreateClientInternal();
             }
         }
 
-        /// <summary>
-        /// 通过 TCP 连接测试 Master 端点连通性，可用于启动前的健康预检。
-        /// </summary>
         public async Task<bool> CheckMasterConnectivityAsync(CancellationToken cancellationToken = default)
         {
             try
@@ -126,9 +112,6 @@ namespace CrawlerWorker.Communication
             }
         }
 
-        /// <summary>
-        /// 优雅关闭 gRPC 通道，支持超时控制。
-        /// </summary>
         public async Task ShutdownAsync(CancellationToken cancellationToken = default)
         {
             GrpcChannel? channelToShutdown = null;
@@ -146,7 +129,6 @@ namespace CrawlerWorker.Communication
 
             try
             {
-                // 设置关闭超时，避免无限等待
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
                 await channelToShutdown.ShutdownAsync().WaitAsync(linkedCts.Token).ConfigureAwait(false);
@@ -190,10 +172,6 @@ namespace CrawlerWorker.Communication
             GC.SuppressFinalize(this);
         }
 
-        // --------------------------------------------------------------
-        // 私有方法
-        // --------------------------------------------------------------
-
         private CrawlerCoordinator.CrawlerCoordinatorClient CreateClientInternal()
         {
             _logger.LogInformation("初始化 gRPC 通道，Master 端点: {Endpoint}", _grpcSettings.MasterEndpoint);
@@ -215,14 +193,16 @@ namespace CrawlerWorker.Communication
                     new GzipCompressionProvider(System.IO.Compression.CompressionLevel.Fastest)
                 },
                 ThrowOperationCanceledOnCancellation = true,
-                // 根据协议自动决定是否跳过证书验证
                 UnsafeUseInsecureChannelCallCredentials = IsInsecureEndpoint()
             };
 
             _channel = GrpcChannel.ForAddress(_grpcSettings.MasterEndpoint, channelOptions);
-            _client = new CrawlerCoordinator.CrawlerCoordinatorClient(_channel);
 
-            _logger.LogDebug("gRPC 通道创建完成");
+            // 关键：使用拦截器包装通道
+            var callInvoker = _channel.Intercept(_authInterceptor);
+            _client = new CrawlerCoordinator.CrawlerCoordinatorClient(callInvoker);
+
+            _logger.LogInformation("gRPC 通道创建完成，已配置认证拦截器");
             return _client;
         }
 
@@ -232,20 +212,9 @@ namespace CrawlerWorker.Communication
             {
                 EnableMultipleHttp2Connections = true,
                 PooledConnectionIdleTimeout = TimeSpan.FromMinutes(_grpcSettings.ConnectionIdleTimeoutMinutes),
-                ConnectTimeout = TimeSpan.FromSeconds(5),
-                // 优化 HTTP/2 流控窗口
+                ConnectTimeout = TimeSpan.FromSeconds(10),
                 InitialHttp2StreamWindowSize = 65535,
             };
-
-            //// 仅对 http 端点跳过证书验证（保持生产环境对 https 的安全校验）
-            //if (IsInsecureEndpoint())
-            //{
-            //    // 修正：必须实例化 SslOptions 才能设置回调
-            //    handler.SslOptions = new SslClientAuthenticationOptions
-            //    {
-            //        RemoteCertificateValidationCallback = (_, _, _, _) => true
-            //    };
-            //}
 
             return handler;
         }
@@ -266,7 +235,7 @@ namespace CrawlerWorker.Communication
                 host = uri.Host;
                 port = uri.Port;
 
-                // 兼容绑定在 0.0.0.0 或 [::] 的情况，TCP 连接时转换为 localhost
+                // 兼容 0.0.0.0，转换为 localhost 用于 TCP 连接测试
                 if (host == "0.0.0.0" || host == "[::]")
                     host = "localhost";
 

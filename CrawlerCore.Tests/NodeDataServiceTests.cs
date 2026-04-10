@@ -28,7 +28,7 @@ namespace CrawlerCore.Tests.Services
 
             _dbContext = new CrawlerDbContext(options, mockConfig.Object);
             _dbContext.Database.EnsureCreated();
-            _nodeService = new NodeDataService(_dbContext);
+            _nodeService = new NodeManagementService(_dbContext);
         }
 
         [Fact]

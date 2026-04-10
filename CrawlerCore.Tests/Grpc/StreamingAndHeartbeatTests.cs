@@ -33,7 +33,8 @@ namespace CrawlerCore.Tests.Grpc
             _nodeInfoCollector = new NodeInfoCollector(Microsoft.Extensions.Logging.Abstractions.NullLogger<NodeInfoCollector>.Instance);
             _grpcClientManager = new GrpcClientManager(
                 Options.Create(_testGrpcSettings),
-                Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance,
+                new GrpcClientAuthenticationInterceptor(Options.Create(_testGrpcSettings), Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientAuthenticationInterceptor>.Instance)
             );
             _workerSessionManager = new WorkerSessionManager(Microsoft.Extensions.Logging.Abstractions.NullLogger<WorkerSessionManager>.Instance);
         }
@@ -209,7 +210,8 @@ namespace CrawlerCore.Tests.Grpc
             });
             using var invalidClientManager = new GrpcClientManager(
                 invalidSettings,
-                Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance,
+                new GrpcClientAuthenticationInterceptor(invalidSettings, Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientAuthenticationInterceptor>.Instance)
             );
 
             var result = await invalidClientManager.CheckMasterConnectivityAsync(invalidCts.Token);
@@ -226,7 +228,8 @@ namespace CrawlerCore.Tests.Grpc
             });
             using var clientManager = new GrpcClientManager(
                 settings,
-                Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance,
+                new GrpcClientAuthenticationInterceptor(settings, Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientAuthenticationInterceptor>.Instance)
             );
 
             // 调用 .ToString() 验证解析不会抛出异常
