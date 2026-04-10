@@ -387,7 +387,7 @@ namespace CrawlerMaster.WPF.Services
                         var hb = message.Heartbeat;
                         _logger.LogInformation(
                             $"收到节点 {nodeId} 心跳: CPU={hb.CpuUsage:F2}%, 内存={hb.MemoryUsageMb:F2}MB, 活跃任务={hb.ActiveTasks}");
-                        _  =  _nodeManagementService.UpdateNodeHeartbeatAsync(nodeId);
+                        _ = _nodeManagementService.UpdateNodeHeartbeatAsync(new NodeInfo { NodeId = nodeId, LastHeartbeat = DateTime.UtcNow, CpuUsage = hb.CpuUsage, MemoryUsageMb = hb.MemoryUsageMb, ActiveTasks = hb.ActiveTasks, DiskUsagePercent = hb.DiskUsagePercent });
                         var hbHandler = Volatile.Read(ref _heartbeatReceived);
                         if (hbHandler != null)
                         {

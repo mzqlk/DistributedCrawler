@@ -24,11 +24,11 @@ namespace CrawlerCore.Interfaces
         Task<List<NodeInfo>> GetActiveNodesAsync();
 
         /// <summary>
-        /// 更新节点最后心跳时间
+        /// 更新节点最后心跳状态
         /// </summary>
         /// <param name="nodeId">节点ID</param>
         /// <returns>是否更新成功</returns>
-        Task<bool> UpdateNodeHeartbeatAsync(string nodeId);
+        Task<bool> UpdateNodeHeartbeatAsync(NodeInfo nodeInfo);
 
         /// <summary>
         /// 移除离线节点（超过指定超时时间无心跳）

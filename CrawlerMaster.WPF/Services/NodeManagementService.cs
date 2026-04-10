@@ -87,15 +87,19 @@ namespace CrawlerMaster.WPF.Services
                 .ToListAsync();
         }
 
-        public async Task<bool> UpdateNodeHeartbeatAsync(string nodeId)
+        public async Task<bool> UpdateNodeHeartbeatAsync(NodeInfo nodeInfo)
         {
             await _writeLock.WaitAsync();
             try
             {
-                var node = await _dbContext.NodeInfos.FirstOrDefaultAsync(n => n.NodeId == nodeId);
+                var node = await _dbContext.NodeInfos.FirstOrDefaultAsync(n => n.NodeId == nodeInfo.NodeId);
                 if (node == null) return false;
 
-                node.LastHeartbeat = DateTime.UtcNow;
+                node.CpuUsage = nodeInfo.CpuUsage;
+                node.MemoryUsageMb = nodeInfo.MemoryUsageMb;
+                node.DiskUsagePercent = nodeInfo.DiskUsagePercent;
+                node.ActiveTasks = nodeInfo.ActiveTasks;
+                node.LastHeartbeat = nodeInfo.LastHeartbeat;
                 return await _dbContext.SaveChangesAsync() > 0;
             }
             finally
