@@ -65,9 +65,9 @@ namespace CrawlerCore.Tests.Services
         {
             var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
 
-            await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P1" }, 1);
-            await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P5" }, 5);
-            await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P3" }, 3);
+            await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P1", Priority = 1});
+            await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P5", Priority = 5 });
+            await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P3", Priority = 3 });
 
             scheduler.TryDequeue(out var task1);
             scheduler.TryDequeue(out var task2);
@@ -91,8 +91,8 @@ namespace CrawlerCore.Tests.Services
         public async Task ScheduleTask_InvalidPriority_ReturnFalse()
         {
             var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
-            var result0 = await scheduler.ScheduleTaskAsync(new CrawlerTask(), 0);
-            var result6 = await scheduler.ScheduleTaskAsync(new CrawlerTask(), 6);
+            var result0 = await scheduler.ScheduleTaskAsync(new CrawlerTask{Priority = 0});
+            var result6 = await scheduler.ScheduleTaskAsync(new CrawlerTask{Priority = 6});
 
             Assert.False(result0);
             Assert.False(result6);
@@ -110,14 +110,13 @@ namespace CrawlerCore.Tests.Services
         public async Task ScheduleTask_SamePriority_FifoOrder()
         {
             var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
-            var task1 = new CrawlerTask { TaskName = "Task1" };
-            var task2 = new CrawlerTask { TaskName = "Task2" };
-            var task3 = new CrawlerTask { TaskName = "Task3" };
+            var task1 = new CrawlerTask { TaskName = "Task1", Priority = 3 };
+            var task2 = new CrawlerTask { TaskName = "Task2", Priority = 3 };
+            var task3 = new CrawlerTask { TaskName = "Task3", Priority = 3 };
 
-            await scheduler.ScheduleTaskAsync(task1, 3);
-            await scheduler.ScheduleTaskAsync(task2, 3);
-            await scheduler.ScheduleTaskAsync(task3, 3);
-
+            await scheduler.ScheduleTaskAsync(task1);
+            await scheduler.ScheduleTaskAsync(task2);
+            await scheduler.ScheduleTaskAsync(task3);
             scheduler.TryDequeue(out var dequeued1);
             scheduler.TryDequeue(out var dequeued2);
             scheduler.TryDequeue(out var dequeued3);
@@ -131,8 +130,8 @@ namespace CrawlerCore.Tests.Services
         public async Task AssignTaskToOptimalNodeAsync_SelectLeastActiveNode()
         {
             var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
-            var testTask = new CrawlerTask { TaskName = "TestTask" };
-            await scheduler.ScheduleTaskAsync(testTask, 3);
+            var testTask = new CrawlerTask { TaskName = "TestTask", Priority = 3 };
+            await scheduler.ScheduleTaskAsync(testTask);
 
             var nodeId = await scheduler.AssignTaskToOptimalNodeAsync(testTask.TaskId);
 

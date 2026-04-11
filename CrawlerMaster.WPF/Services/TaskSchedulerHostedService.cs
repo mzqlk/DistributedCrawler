@@ -54,7 +54,7 @@ namespace CrawlerMaster.WPF.Services
         /// <param name="task">爬虫任务</param>
         /// <param name="priority">优先级（1-5）</param>
         /// <returns>入队结果</returns>
-        public async Task<bool> ScheduleTaskAsync(CrawlerTask task, int priority = 1)
+        public async Task<bool> ScheduleTaskAsync(CrawlerTask task)
         {
             // 1. 空值校验
             if (task == null)
@@ -64,9 +64,9 @@ namespace CrawlerMaster.WPF.Services
             }
 
             // 2. 优先级范围校验（1-5）
-            if (priority < 1 || priority > 5)
+            if (task.Priority < 1 || task.Priority > 5)
             {
-                LogHelper.Error($"任务入队失败：优先级{priority}超出范围[1-5]，TaskId={task.TaskId}");
+                LogHelper.Error($"任务入队失败：优先级{task.Priority}超出范围[1-5]，TaskId={task.TaskId}");
                 return false;
             }
 
@@ -84,16 +84,15 @@ namespace CrawlerMaster.WPF.Services
             }
 
             // 4. 赋值优先级并入队（线程安全 + FIFO保障）
-            task.Priority = priority;
             lock (_queueLock)
             {
                 var secondary = Interlocked.Increment(ref _enqueueCounter);
-                _taskQueue.Enqueue(task, (int.MaxValue - priority, secondary));
+                _taskQueue.Enqueue(task, (int.MaxValue - task.Priority, secondary));
                 _queueCount++;
             }
 
             // 5. 结构化日志记录
-            LogHelper.Info($"任务入队成功：TaskId={task.TaskId}, TaskName={task.TaskName}, Priority={priority}, 当前队列数={_queueCount}");
+            LogHelper.Info($"任务入队成功：TaskId={task.TaskId}, TaskName={task.TaskName}, Priority={task.Priority}, 当前队列数={_queueCount}");
 
             return true;
         }

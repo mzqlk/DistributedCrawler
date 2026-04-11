@@ -12,9 +12,8 @@ namespace CrawlerCore.Interfaces
         /// 将任务加入调度队列（支持优先级）
         /// </summary>
         /// <param name="task">爬虫任务实体</param>
-        /// <param name="priority">任务优先级（1=最低，5=最高，默认1）</param>
         /// <returns>是否入队成功</returns>
-        Task<bool> ScheduleTaskAsync(CrawlerTask task, int priority = 1);
+        Task<bool> ScheduleTaskAsync(CrawlerTask task);
 
         /// <summary>
         /// 将任务分配到最优Worker节点（基于负载均衡）
