@@ -23,6 +23,11 @@ namespace CrawlerMaster.WPF
             //_ = TestDatabaseAsync();
         }
 
+        private async void TestDispatchButton_Click(object sender, RoutedEventArgs e)
+        {
+            await _viewModel.TestCreateAndDispatchTaskAsync();
+        }
+
         protected override void OnClosed(EventArgs e)
         {
             // 清理 ViewModel 资源

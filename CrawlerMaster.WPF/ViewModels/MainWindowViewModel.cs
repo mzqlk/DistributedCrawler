@@ -16,6 +16,7 @@ namespace CrawlerMaster.WPF.ViewModels
     {
         private readonly IEventAggregator _eventAggregator;
         private readonly IServiceProvider _serviceProvider;
+        private readonly ITaskSchedulerService _taskSchedulerService;
         private readonly Dispatcher _uiDispatcher;
         private Guid _nodeStatusSubscriptionId = Guid.Empty;
         private bool _disposed = false;
@@ -24,10 +25,11 @@ namespace CrawlerMaster.WPF.ViewModels
         public ObservableCollection<NodeDisplayInfo> Nodes { get; } = new ObservableCollection<NodeDisplayInfo>();
 
         // 构造函数：注入必要服务
-        public MainWindowViewModel(IEventAggregator eventAggregator, IServiceProvider serviceProvider)
+        public MainWindowViewModel(IEventAggregator eventAggregator, IServiceProvider serviceProvider, ITaskSchedulerService taskSchedulerService)
         {
             _eventAggregator = eventAggregator ?? throw new ArgumentNullException(nameof(eventAggregator));
             _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+            _taskSchedulerService = taskSchedulerService ?? throw new ArgumentNullException(nameof(taskSchedulerService));
             _uiDispatcher = Application.Current.Dispatcher;
 
             // 1. 订阅全局节点状态变更事件
@@ -130,6 +132,45 @@ namespace CrawlerMaster.WPF.ViewModels
             catch (Exception ex)
             {
                 LogHelper.Error(ex, "加载节点列表失败");
+            }
+        }
+
+        public async Task TestCreateAndDispatchTaskAsync()
+        {
+            try
+            {
+                LogHelper.Info("=== 手动触发测试任务下发 ===");
+
+                // 创建一个测试任务
+                var testTask = new CrawlerTask
+                {
+                    TaskName = $"手动测试-{DateTime.Now:HHmmss}",
+                    PluginName = "ThesisPlugin",
+                    MaxDepth = 2,
+                    MaxPages = 5,
+                    Priority = 3,
+                    StartUrls = new System.Collections.Generic.List<string> { "https://example.com" },
+                    Configuration = new System.Collections.Generic.Dictionary<string, string> { ["UserAgent"] = "TestBot" }
+                };
+
+                // 入队并触发调度
+                bool scheduled = await _taskSchedulerService.ScheduleTaskAsync(testTask);
+                if (scheduled)
+                {
+                    LogHelper.Info($"测试任务已入队，TaskId = {testTask.TaskId}，等待调度器分配...");
+                    MessageBox.Show($"任务已创建并入队！\nTaskId: {testTask.TaskId}\n请观察 Master 与 Worker 日志。",
+                                    "测试下发", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    LogHelper.Error("测试任务入队失败");
+                    MessageBox.Show("任务入队失败，请查看日志。", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, "手动测试任务下发异常");
+                MessageBox.Show($"异常：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

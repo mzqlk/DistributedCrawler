@@ -83,7 +83,7 @@ namespace CrawlerCore.Tests.Grpc
             var officialFields = new List<string>
             {
                 "task_id", "task_name", "start_urls", "plugin_name",
-                "configuration", "max_depth", "max_pages", "status"
+                "configuration", "max_depth", "max_pages", "status", "priority"
             };
 
             // Assert：无额外字段

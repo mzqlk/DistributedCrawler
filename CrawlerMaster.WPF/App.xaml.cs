@@ -177,13 +177,14 @@ namespace CrawlerMaster.WPF
 
             // 核心服务注册
             // 先注册负载均衡调度器
-            services.AddSingleton<LoadBalancingScheduler>();
+            services.AddSingleton<ILoadBalancingScheduler, LoadBalancingScheduler>();
 
             services.AddHostedService<GrpcHostedService>();
             services.AddSingleton<SessionManager>();
 
             // 注册 CrawlerCoordinatorService 具体类型（单例）
             services.AddSingleton<CrawlerCoordinatorService>();
+            services.AddSingleton<ICrawlerCoordinatorService>(sp => sp.GetRequiredService<CrawlerCoordinatorService>());
 
             services.AddSingleton<CrawlerCoordinator.CrawlerCoordinatorBase>(sp =>
         sp.GetRequiredService<CrawlerCoordinatorService>());

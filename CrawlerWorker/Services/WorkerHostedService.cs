@@ -6,6 +6,7 @@ using Grpc.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Channels;
@@ -28,6 +29,7 @@ namespace CrawlerWorker.Services
         private readonly object _streamLock = new();
         private readonly object _eventLock = new();
         private bool _disposed = false;
+        private readonly ConcurrentQueue<CrawlerCore.Entities.CrawlerTask> _localTaskQueue = new();
 
         #region 事件定义（线程安全，异常隔离）
         private Func<NodeRegistration, RegistrationResponse, CancellationToken, Task>? _nodeRegistered;
@@ -278,23 +280,44 @@ namespace CrawlerWorker.Services
                 switch (message.MessageCase)
                 {
                     case FromMaster.MessageOneofCase.NewTask:
-                        LogHelper.Info($"收到Master下发的新任务: TaskId={message.NewTask.TaskId}");
-                        var taskHandler = Volatile.Read(ref _newTaskReceived);
-                        if (taskHandler != null)
                         {
-                            foreach (Func<CrawlerTask, CancellationToken, Task> subscriber in taskHandler.GetInvocationList())
+                            var protoTask = message.NewTask;
+                            LogHelper.Info($"收到Master下发的新任务: TaskId={protoTask.TaskId}, Name={protoTask.TaskName}");
+
+                            var crawlerTask = new CrawlerCore.Entities.CrawlerTask
                             {
-                                try
+                                TaskId = protoTask.TaskId,
+                                TaskName = protoTask.TaskName,
+                                PluginName = protoTask.PluginName,
+                                MaxDepth = protoTask.MaxDepth,
+                                MaxPages = protoTask.MaxPages,
+                                Priority = protoTask.Priority,
+                                Status = (CrawlerCore.Entities.TaskStatus)protoTask.Status,
+                                StartUrls = protoTask.StartUrls.ToList(),
+                                Configuration = protoTask.Configuration.ToDictionary(kv => kv.Key, kv => kv.Value)
+                            };
+
+                            // 启动任务处理（不阻塞读循环）
+                            _ = ProcessNewTaskAsync(crawlerTask);
+
+                            // 触发外部事件（仅用于扩展）
+                            var taskHandler = Volatile.Read(ref _newTaskReceived);
+                            if (taskHandler != null)
+                            {
+                                foreach (Func<CrawlerTask, CancellationToken, Task> subscriber in taskHandler.GetInvocationList())
                                 {
-                                    await subscriber.Invoke(message.NewTask, cancellationToken).ConfigureAwait(false);
-                                }
-                                catch (Exception ex)
-                                {
-                                    LogHelper.Error(ex, "新任务事件订阅者执行异常");
+                                    try
+                                    {
+                                        await subscriber.Invoke(protoTask, cancellationToken).ConfigureAwait(false);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        LogHelper.Error(ex, "新任务事件订阅者执行异常");
+                                    }
                                 }
                             }
+                            break;
                         }
-                        break;
 
                     case FromMaster.MessageOneofCase.TaskControl:
                         LogHelper.Info($"收到Master下发的任务控制指令: TaskId={message.TaskControl.TaskId}, Command={message.TaskControl.Command}");
@@ -534,6 +557,50 @@ namespace CrawlerWorker.Services
             await Task.Delay(_grpcSettings.RetryDelayMilliseconds, stoppingToken).ConfigureAwait(false);
             _grpcClientManager.RecreateChannel();
             await StartStreamingAsync(stoppingToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// 处理新任务：入队 + 上报进度（独立异步操作）
+        /// </summary>
+        public async Task ProcessNewTaskAsync(CrawlerCore.Entities.CrawlerTask task)
+        {
+            // 1. 入队
+            _localTaskQueue.Enqueue(task);
+            _sessionManager.IncrementActiveTasks();
+
+            // 2. 构造进度上报消息
+            var progress = new TaskProgress
+            {
+                TaskId = task.TaskId,
+                CrawledPages = 0,
+                TotalPages = task.MaxPages,
+                CurrentStatus = CrawlerCore.Protos.TaskStatus.Running
+            };
+            var message = new FromWorker { TaskProgress = progress };
+
+            // 3. 异步发送（使用独立超时取消，避免受上层取消令牌影响）
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await SendMessageAsync(message, timeoutCts.Token).ConfigureAwait(false);
+                LogHelper.Debug($"已向Master上报任务进度: TaskId={task.TaskId}");
+            }
+            catch (OperationCanceledException)
+            {
+                LogHelper.Warn($"上报任务进度超时: TaskId={task.TaskId}");
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, $"上报任务进度失败: TaskId={task.TaskId}");
+            }
+        }
+
+        /// <summary>
+        /// 尝试从本地队列获取下一个待执行任务
+        /// </summary>
+        public bool TryGetNextTask(out CrawlerCore.Entities.CrawlerTask? task)
+        {
+            return _localTaskQueue.TryDequeue(out task);
         }
 
         private async Task CleanupStreamResourcesAsync()

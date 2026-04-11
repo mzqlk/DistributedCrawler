@@ -10,64 +10,71 @@ using Xunit;
 
 namespace CrawlerCore.Tests.Services
 {
-    /// <summary>
-    /// 任务调度优先级队列单元测试（Mock化，不依赖数据库）
-    /// 验收标准：1.优先级排序正确 2.空队列返回false 3.参数越界拦截
-    /// </summary>
     public class TaskSchedulerHostedServiceTests : IDisposable
     {
         private readonly IServiceProvider _serviceProvider;
         private readonly IServiceScope _scope;
         private readonly Mock<INodeManagementService> _mockNodeManager;
         private readonly Mock<ITaskDataService> _mockTaskDataService;
+        private readonly Mock<ICrawlerCoordinatorService> _mockCoordinator;
+        private readonly Mock<ILoadBalancingScheduler> _mockLoadBalancer; // 改为接口 Mock
 
         public TaskSchedulerHostedServiceTests()
         {
-            // 初始化 Mock 对象
             _mockNodeManager = new Mock<INodeManagementService>();
             _mockTaskDataService = new Mock<ITaskDataService>();
+            _mockCoordinator = new Mock<ICrawlerCoordinatorService>();
+            _mockLoadBalancer = new Mock<ILoadBalancingScheduler>();
 
-            // 配置 Mock 行为
-            _mockNodeManager
-                .Setup(m => m.GetActiveNodesAsync())
+            // 默认发送成功
+            _mockCoordinator.Setup(c => c.SendTaskToNodeAsync(It.IsAny<string>(), It.IsAny<CrawlerTask>()))
+                            .ReturnsAsync(true);
+
+            // 默认负载均衡返回 node-1
+            _mockLoadBalancer.Setup(l => l.SelectOptimalNode(
+                    It.IsAny<IEnumerable<NodeInfo>>(),
+                    It.IsAny<CrawlerTask>()))
+                .Returns(new NodeInfo { NodeId = "node-1" });
+
+            _mockNodeManager.Setup(m => m.GetActiveNodesAsync())
                 .ReturnsAsync(new List<NodeInfo>
                 {
                     new() { NodeId = "node-1", ActiveTasks = 0, CpuUsage = 10 },
                     new() { NodeId = "node-2", ActiveTasks = 2, CpuUsage = 30 }
                 });
 
-            _mockTaskDataService
-                .Setup(m => m.AddTaskAsync(It.IsAny<CrawlerTask>()))
+            _mockTaskDataService.Setup(m => m.AddTaskAsync(It.IsAny<CrawlerTask>()))
                 .ReturnsAsync((CrawlerTask t) => t);
-
-            _mockTaskDataService
-                .Setup(m => m.AssignNodeToTaskAsync(It.IsAny<string>(), It.IsAny<string>()))
+            _mockTaskDataService.Setup(m => m.AssignNodeToTaskAsync(It.IsAny<string>(), It.IsAny<string>()))
                 .ReturnsAsync(true);
+            _mockTaskDataService.Setup(m => m.UpdateTaskStatusAsync(It.IsAny<string>(), It.IsAny<Entities.TaskStatus>()))
+                .ReturnsAsync(true);
+            _mockTaskDataService.Setup(m => m.GetTaskByIdAsync(It.IsAny<string>()))
+                .ReturnsAsync((string id) => new CrawlerTask { TaskId = id });
 
-            // 构建测试容器
             var services = new ServiceCollection();
 
-            // 注册 Mock 服务（Scoped）
             services.AddScoped(_ => _mockNodeManager.Object);
             services.AddScoped(_ => _mockTaskDataService.Object);
+            services.AddScoped(_ => _mockCoordinator.Object);
+            services.AddSingleton(_ => _mockLoadBalancer.Object);   // 注册 Mock 负载均衡器
 
-            services.AddSingleton<LoadBalancingScheduler>();
-
-            // 注册 TaskSchedulerHostedService（单例）
+            // TaskSchedulerHostedService 现在依赖接口
             services.AddSingleton<TaskSchedulerHostedService>();
             services.AddSingleton<ITaskSchedulerService>(sp => sp.GetRequiredService<TaskSchedulerHostedService>());
 
-            // 构建服务提供程序
             _serviceProvider = services.BuildServiceProvider();
             _scope = _serviceProvider.CreateScope();
         }
+
+        // ---------- 以下测试方法保持不变 ----------
 
         [Fact(DisplayName = "多优先级入队：高优先级优先出队")]
         public async Task ScheduleTask_MultiPriority_DequeueOrderCorrect()
         {
             var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
 
-            await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P1", Priority = 1});
+            await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P1", Priority = 1 });
             await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P5", Priority = 5 });
             await scheduler.ScheduleTaskAsync(new CrawlerTask { TaskName = "P3", Priority = 3 });
 
@@ -93,8 +100,8 @@ namespace CrawlerCore.Tests.Services
         public async Task ScheduleTask_InvalidPriority_ReturnFalse()
         {
             var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
-            var result0 = await scheduler.ScheduleTaskAsync(new CrawlerTask{Priority = 0});
-            var result6 = await scheduler.ScheduleTaskAsync(new CrawlerTask{Priority = 6});
+            var result0 = await scheduler.ScheduleTaskAsync(new CrawlerTask { Priority = 0 });
+            var result6 = await scheduler.ScheduleTaskAsync(new CrawlerTask { Priority = 6 });
 
             Assert.False(result0);
             Assert.False(result6);
@@ -119,6 +126,7 @@ namespace CrawlerCore.Tests.Services
             await scheduler.ScheduleTaskAsync(task1);
             await scheduler.ScheduleTaskAsync(task2);
             await scheduler.ScheduleTaskAsync(task3);
+
             scheduler.TryDequeue(out var dequeued1);
             scheduler.TryDequeue(out var dequeued2);
             scheduler.TryDequeue(out var dequeued3);
@@ -128,17 +136,55 @@ namespace CrawlerCore.Tests.Services
             Assert.Equal(task3.TaskId, dequeued3!.TaskId);
         }
 
-        [Fact(DisplayName = "任务分配：选择活跃任务数最少的节点")]
+        [Fact(DisplayName = "任务分配：调用负载均衡器并成功下发")]
         public async Task AssignTaskToOptimalNodeAsync_SelectLeastActiveNode()
         {
             var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
             var testTask = new CrawlerTask { TaskName = "TestTask", Priority = 3 };
             await scheduler.ScheduleTaskAsync(testTask);
 
+            // 确保负载均衡器返回 node-1
+            _mockLoadBalancer.Setup(l => l.SelectOptimalNode(It.IsAny<IEnumerable<NodeInfo>>(), It.IsAny<CrawlerTask>()))
+                             .Returns(new NodeInfo { NodeId = "node-1" });
+
             var nodeId = await scheduler.AssignTaskToOptimalNodeAsync(testTask.TaskId);
 
             Assert.Equal("node-1", nodeId);
             _mockTaskDataService.Verify(m => m.AssignNodeToTaskAsync(testTask.TaskId, "node-1"), Times.Once);
+            _mockCoordinator.Verify(c => c.SendTaskToNodeAsync("node-1", It.IsAny<CrawlerTask>()), Times.Once);
+        }
+
+        [Fact(DisplayName = "任务下发失败：返回 null 且不更新数据库")]
+        public async Task AssignTaskToOptimalNodeAsync_WhenSendFails_ReturnsNullAndLogsError()
+        {
+            _mockCoordinator.Setup(c => c.SendTaskToNodeAsync(It.IsAny<string>(), It.IsAny<CrawlerTask>()))
+                            .ReturnsAsync(false);
+
+            var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
+            var testTask = new CrawlerTask { TaskName = "FailTask", Priority = 2 };
+            await scheduler.ScheduleTaskAsync(testTask);
+
+            var nodeId = await scheduler.AssignTaskToOptimalNodeAsync(testTask.TaskId);
+
+            Assert.Null(nodeId);
+            _mockTaskDataService.Verify(m => m.AssignNodeToTaskAsync(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+            _mockCoordinator.Verify(c => c.SendTaskToNodeAsync(It.IsAny<string>(), It.IsAny<CrawlerTask>()), Times.Once);
+        }
+
+        [Fact(DisplayName = "负载均衡返回 null：任务分配失败")]
+        public async Task AssignTaskToOptimalNodeAsync_WhenNoOptimalNode_ReturnsNull()
+        {
+            _mockLoadBalancer.Setup(l => l.SelectOptimalNode(It.IsAny<IEnumerable<NodeInfo>>(), It.IsAny<CrawlerTask>()))
+                             .Returns((NodeInfo)null!);
+
+            var scheduler = _scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
+            var testTask = new CrawlerTask { TaskName = "NoNodeTask", Priority = 2 };
+            await scheduler.ScheduleTaskAsync(testTask);
+
+            var nodeId = await scheduler.AssignTaskToOptimalNodeAsync(testTask.TaskId);
+
+            Assert.Null(nodeId);
+            _mockCoordinator.Verify(c => c.SendTaskToNodeAsync(It.IsAny<string>(), It.IsAny<CrawlerTask>()), Times.Never);
         }
 
         public void Dispose()

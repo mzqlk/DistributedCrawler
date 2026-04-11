@@ -84,6 +84,7 @@ message CrawlerTask {
   int32 max_depth = 6;
   int32 max_pages = 7;
   TaskStatus status = 8;
+  int32 priority = 9;
 }
 
 /// <summary>

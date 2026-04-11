@@ -23,6 +23,11 @@ public interface IWorkerSessionManager
     bool IsRegistered { get; }
 
     /// <summary>
+    /// 活跃任务数量（Worker本地统计）
+    /// </summary>
+    int ActiveTaskCount { get; }
+
+    /// <summary>
     /// 保存注册成功的会话信息
     /// </summary>
     void SaveSession(RegistrationResponse response);
@@ -31,4 +36,14 @@ public interface IWorkerSessionManager
     /// 清除会话信息
     /// </summary>
     void ClearSession();
+
+    /// <summary>
+    /// 活跃任务数量加1
+    /// </summary>
+    void IncrementActiveTasks();
+
+    /// <summary>
+    /// 活跃任务数量减1
+    /// </summary>
+    void DecrementActiveTasks();
 }

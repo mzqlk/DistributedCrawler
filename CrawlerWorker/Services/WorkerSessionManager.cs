@@ -11,10 +11,12 @@ public class WorkerSessionManager : IWorkerSessionManager
     private volatile string? _sessionId;
     private volatile SystemConfig? _systemConfig;
     private volatile bool _isRegistered;
+    private int _activeTaskCount;
 
     public string? SessionId => _sessionId;
     public SystemConfig? SystemConfig => _systemConfig;
     public bool IsRegistered => _isRegistered;
+    public int ActiveTaskCount => _activeTaskCount;
 
     public WorkerSessionManager(ILogger<WorkerSessionManager> logger)
     {
@@ -49,4 +51,7 @@ public class WorkerSessionManager : IWorkerSessionManager
             _isRegistered = false;
         }
     }
+
+    public void IncrementActiveTasks() => Interlocked.Increment(ref _activeTaskCount);
+    public void DecrementActiveTasks() => Interlocked.Decrement(ref _activeTaskCount);
 }

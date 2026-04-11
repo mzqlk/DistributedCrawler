@@ -24,10 +24,10 @@ namespace CrawlerMaster.WPF.Services
         private int _queueCount = 0;
         private long _enqueueCounter = 0;
 
-        // DI服务提供程序（用于创建Scoped作用域）
-        private readonly IServiceProvider _serviceProvider;
+        // 服务范围工厂
+        private readonly IServiceScopeFactory _scopeFactory;
         // 工作日22新增：注入负载均衡调度器（仅预留调用点）
-        private readonly LoadBalancingScheduler _loadBalancer;
+        private readonly ILoadBalancingScheduler _loadBalancer;
 
         /// <summary>
         /// 获取当前队列中的任务数量（线程安全）
@@ -44,9 +44,9 @@ namespace CrawlerMaster.WPF.Services
         }
 
         // 构造函数：工作日22新增注入 LoadBalancingScheduler
-        public TaskSchedulerHostedService(IServiceProvider serviceProvider, LoadBalancingScheduler loadBalancer)
+        public TaskSchedulerHostedService(IServiceScopeFactory scopeFactory, ILoadBalancingScheduler loadBalancer)
         {
-            _serviceProvider = serviceProvider;
+            _scopeFactory = scopeFactory;
             _loadBalancer = loadBalancer; // 工作日22：注入调度器
             LogHelper.Info("任务调度后台服务已初始化（已注入资源感知负载均衡调度器，预留调用点）");
         }
@@ -75,7 +75,7 @@ namespace CrawlerMaster.WPF.Services
             // 3. 创建Scoped作用域，保存任务到数据库
             try
             {
-                using var scope = _serviceProvider.CreateScope();
+                using var scope = _scopeFactory.CreateScope();
                 var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
                 await taskDataService.AddTaskAsync(task);
             }
@@ -119,47 +119,61 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 分配任务到最优节点（工作日22：保留原有简单逻辑，新增调度器预留调用点）
+        /// 分配任务到最优节点
         /// </summary>
         public async Task<string?> AssignTaskToOptimalNodeAsync(string taskId)
         {
-            LogHelper.Info($"开始分配任务到最优节点：TaskId={taskId}");
+            LogHelper.Info($"开始分配并下发任务：TaskId={taskId}");
 
-            // 创建Scoped作用域
-            using var scope = _serviceProvider.CreateScope();
+            // 使用 Scope 解析 Scoped 服务
+            using var scope = _scopeFactory.CreateScope();
             var nodeManager = scope.ServiceProvider.GetRequiredService<INodeManagementService>();
             var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+            var coordinatorService = scope.ServiceProvider.GetRequiredService<ICrawlerCoordinatorService>();
 
-            // 1. 获取所有在线节点
-            var activeNodes = await nodeManager.GetActiveNodesAsync();
+            // 1. 获取任务详情
+            var task = await taskDataService.GetTaskByIdAsync(taskId).ConfigureAwait(false);
+            if (task == null)
+            {
+                LogHelper.Error($"任务分配失败：任务 {taskId} 不存在");
+                return null;
+            }
+
+            // 2. 获取在线节点
+            var activeNodes = await nodeManager.GetActiveNodesAsync().ConfigureAwait(false);
             if (activeNodes.Count == 0)
             {
                 LogHelper.Warn($"任务分配失败：无可用在线节点，TaskId={taskId}");
                 return null;
             }
 
-            // 工作日22：【预留调用点】后续可替换为 _loadBalancer.SelectOptimalNode(activeNodes, task)
-            // 2. 原有简单负载均衡：选择活跃任务数最少的节点
-            var optimalNode = activeNodes
-                .OrderBy(n => n.ActiveTasks)
-                .ThenBy(n => n.CpuUsage)
-                .FirstOrDefault();
-
+            // 3. 负载均衡选择最优节点
+            var optimalNode = _loadBalancer.SelectOptimalNode(activeNodes, task);
             if (optimalNode == null)
             {
-                LogHelper.Warn($"任务分配失败：无法选择最优节点，TaskId={taskId}");
+                LogHelper.Warn($"任务分配失败：无满足条件的节点，TaskId={taskId}");
                 return null;
             }
 
-            // 3. 更新任务状态和分配节点
-            var updateResult = await taskDataService.AssignNodeToTaskAsync(taskId, optimalNode.NodeId);
-            if (!updateResult)
+            // 4. 通过 gRPC 下发任务
+            bool sendSuccess = await coordinatorService.SendTaskToNodeAsync(optimalNode.NodeId, task).ConfigureAwait(false);
+            if (!sendSuccess)
             {
-                LogHelper.Error($"任务分配失败：数据库更新异常，TaskId={taskId}, NodeId={optimalNode.NodeId}");
+                LogHelper.Error($"任务下发失败：gRPC 通信异常，TaskId={taskId}, NodeId={optimalNode.NodeId}");
                 return null;
             }
 
-            LogHelper.Info($"任务分配成功：TaskId={taskId}, NodeId={optimalNode.NodeId}");
+            // 5. 更新数据库状态
+            bool updateSuccess = await taskDataService.AssignNodeToTaskAsync(taskId, optimalNode.NodeId).ConfigureAwait(false)
+                                && await taskDataService.UpdateTaskStatusAsync(taskId, CrawlerCore.Entities.TaskStatus.Running).ConfigureAwait(false);
+            if (!updateSuccess)
+            {
+                LogHelper.Error($"任务状态更新失败：数据库异常，TaskId={taskId}, NodeId={optimalNode.NodeId}");
+                // 最终一致性由心跳/进度上报修复
+                return null;
+            }
+
+            LogHelper.Info($"任务下发成功：TaskId={taskId}, NodeId={optimalNode.NodeId}");
             return optimalNode.NodeId;
         }
 
@@ -195,12 +209,12 @@ namespace CrawlerMaster.WPF.Services
                     if (TryDequeue(out var task))
                     {
                         // 2. 分配任务到最优节点
-                        var nodeId = await AssignTaskToOptimalNodeAsync(task!.TaskId);
+                        var nodeId = await AssignTaskToOptimalNodeAsync(task!.TaskId).ConfigureAwait(false);
 
                         // 3. 如果分配失败，将任务重新入队（延迟1秒，使用新的入队序号）
                         if (nodeId == null)
                         {
-                            await Task.Delay(1000, stoppingToken);
+                            await Task.Delay(1000, stoppingToken).ConfigureAwait(false);
                             lock (_queueLock)
                             {
                                 var secondary = Interlocked.Increment(ref _enqueueCounter);
@@ -213,7 +227,7 @@ namespace CrawlerMaster.WPF.Services
                     else
                     {
                         // 4. 队列为空，延迟100ms再检查
-                        await Task.Delay(100, stoppingToken);
+                        await Task.Delay(100, stoppingToken).ConfigureAwait(false);
                     }
                 }
                 catch (OperationCanceledException)
@@ -224,7 +238,7 @@ namespace CrawlerMaster.WPF.Services
                 catch (Exception ex)
                 {
                     LogHelper.Error(ex, "任务调度后台循环发生异常");
-                    await Task.Delay(1000, stoppingToken);
+                    await Task.Delay(1000, stoppingToken).ConfigureAwait(false);
                 }
             }
         }

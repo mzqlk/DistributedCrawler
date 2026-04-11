@@ -15,6 +15,8 @@
         <!-- 工具栏 -->
         <ToolBar Grid.Row="0" Margin="5">
             <Button x:Name="RefreshButton" Content="刷新节点列表" Margin="5" Padding="10,5"/>
+            <!-- 新增测试按钮 -->
+            <Button x:Name="TestDispatchButton" Content="测试下发任务" Margin="5" Padding="10,5" Click="TestDispatchButton_Click"/>
         </ToolBar>
 
         <!-- 节点列表 -->

@@ -18,7 +18,7 @@ namespace CrawlerMaster.WPF.Services
     /// gRPC协调服务实现，严格对齐proto协议，仅通信层能力，无业务逻辑侵入
     /// 修复生命周期、异常隔离、空引用等所有致命问题
     /// </summary>
-    public class CrawlerCoordinatorService : CrawlerCoordinator.CrawlerCoordinatorBase, IDisposable
+    public class CrawlerCoordinatorService : CrawlerCoordinator.CrawlerCoordinatorBase, IDisposable, ICrawlerCoordinatorService
     {
         private readonly SessionManager _sessionManager;
         private readonly GrpcSettings _grpcSettings;
@@ -486,7 +486,7 @@ namespace CrawlerMaster.WPF.Services
             {
                 try
                 {
-                    await streamContext.ResponseStream.WriteAsync(message, cancellationToken).ConfigureAwait(false);
+                    await streamContext.ResponseStream.WriteAsync(message).ConfigureAwait(false);
                     _logger.LogDebug($"向节点 {streamContext.NodeId} 成功发送消息，类型: {message.MessageCase}");
                 }
                 catch (Exception ex)
@@ -494,6 +494,69 @@ namespace CrawlerMaster.WPF.Services
                     _logger.LogError(ex, $"向节点 {streamContext.NodeId} 写入消息失败");
                     throw;
                 }
+            }
+        }
+
+        /// <summary>
+        /// 向指定节点发送新任务（通过已建立的双向流）
+        /// </summary>
+        /// <param name="nodeId">目标节点ID</param>
+        /// <param name="task">爬虫任务实体</param>
+        /// <returns>是否成功写入发送队列</returns>
+        public async Task<bool> SendTaskToNodeAsync(string nodeId, CrawlerCore.Entities.CrawlerTask task)
+        {
+            if (_disposed)
+            {
+                _logger.LogWarning("发送任务失败：服务已释放");
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(nodeId) || task == null)
+            {
+                _logger.LogWarning("发送任务失败：节点ID或任务为空");
+                return false;
+            }
+
+            // 校验会话与流上下文有效性
+            if (!_nodeStreamContexts.TryGetValue(nodeId, out var streamContext)
+                || !_sessionManager.ValidateSession(nodeId, streamContext.SessionId)
+                || streamContext.Cts.IsCancellationRequested
+                || streamContext.SendChannel.Reader.Completion.IsCompleted)
+            {
+                _logger.LogWarning("发送任务失败：节点 {NodeId} 无有效会话或活跃流", nodeId);
+                return false;
+            }
+
+            try
+            {
+                // 实体 → Proto 转换
+                var protoTask = new CrawlerCore.Protos.CrawlerTask
+                {
+                    TaskId = task.TaskId,
+                    TaskName = task.TaskName,
+                    PluginName = task.PluginName,
+                    MaxDepth = task.MaxDepth,
+                    MaxPages = task.MaxPages,
+                    Status = (CrawlerCore.Protos.TaskStatus)task.Status,
+                    Priority = task.Priority
+                };
+                protoTask.StartUrls.AddRange(task.StartUrls);
+                foreach (var kv in task.Configuration)
+                    protoTask.Configuration.Add(kv.Key, kv.Value);
+
+                var message = new FromMaster { NewTask = protoTask };
+
+                // 复用已有的线程安全发送方法
+                bool sendResult = await SendMessageToNodeAsync(nodeId, message).ConfigureAwait(false);
+                if (sendResult)
+                    _logger.LogInformation("任务 {TaskId} 已成功入队至节点 {NodeId} 的发送队列", task.TaskId, nodeId);
+
+                return sendResult;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "向节点 {NodeId} 发送任务 {TaskId} 时发生异常", nodeId, task.TaskId);
+                return false;
             }
         }
 

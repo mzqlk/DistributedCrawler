@@ -11,7 +11,7 @@ namespace CrawlerMaster.WPF.Services
     /// 过滤规则：在线节点 + CPU<50% + 内存使用率<60%
     /// 评分算法：CPU(40%) + 内存(30%) + 网络(20) + 契合度(10)
     /// </summary>
-    public class LoadBalancingScheduler
+    public class LoadBalancingScheduler : ILoadBalancingScheduler
     {
         /// <summary>
         /// 选择最优执行节点
