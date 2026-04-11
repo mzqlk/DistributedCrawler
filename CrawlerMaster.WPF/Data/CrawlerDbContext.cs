@@ -7,7 +7,6 @@ namespace CrawlerMaster.WPF.Data
 {
     public class CrawlerDbContext : DbContext
     {
-        // 全局JSON配置（避免重复创建，优化性能）
         private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
         private readonly IConfiguration _configuration;
 
@@ -17,16 +16,13 @@ namespace CrawlerMaster.WPF.Data
             _configuration = configuration;
         }
 
-        #region 实体集
         public DbSet<CrawlerTask> CrawlerTasks => Set<CrawlerTask>();
         public DbSet<CrawlResult> CrawlResults => Set<CrawlResult>();
         public DbSet<NodeInfo> NodeInfos => Set<NodeInfo>();
         public DbSet<PageResult> PageResults => Set<PageResult>();
-        #endregion
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            #region 爬虫任务配置
             modelBuilder.Entity<CrawlerTask>(entity =>
             {
                 entity.HasKey(e => e.TaskId);
@@ -38,8 +34,12 @@ namespace CrawlerMaster.WPF.Data
                 entity.Property(e => e.MaxPages).HasDefaultValue(0);
                 entity.Property(e => e.Status).HasConversion<string>().HasDefaultValue(CrawlerCore.Entities.TaskStatus.Pending);
                 entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("DATETIME('now')");
+                entity.Property(e => e.Priority).HasDefaultValue(1).IsRequired();
 
-                // JSON 存储集合（空值防护）
+                // 新增：AssignedNode 和 Status 索引（提高任务分配/查询性能）
+                entity.HasIndex(e => e.AssignedNode);
+                entity.HasIndex(e => e.Status);
+
                 entity.Property(e => e.StartUrls)
                         .HasConversion(v => JsonSerializer.Serialize(v, _jsonOptions),
                                     v => JsonSerializer.Deserialize<List<string>>(v, _jsonOptions) ?? new List<string>())
@@ -50,9 +50,7 @@ namespace CrawlerMaster.WPF.Data
                                     v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, _jsonOptions) ?? new())
                         .HasColumnType("TEXT");
             });
-            #endregion
 
-            #region 爬取结果配置
             modelBuilder.Entity<CrawlResult>(entity =>
             {
                 entity.Property<long>("Id").ValueGeneratedOnAdd();
@@ -61,9 +59,7 @@ namespace CrawlerMaster.WPF.Data
                 entity.Property(e => e.TaskId).IsRequired();
                 entity.HasMany(e => e.PageResults).WithOne().HasForeignKey("ResultId").OnDelete(DeleteBehavior.Cascade);
             });
-            #endregion
 
-            #region 页面结果配置
             modelBuilder.Entity<PageResult>(entity =>
             {
                 entity.Property<long>("Id").ValueGeneratedOnAdd();
@@ -71,6 +67,7 @@ namespace CrawlerMaster.WPF.Data
                 entity.ToTable("PageResults");
                 entity.Property(e => e.Url).IsRequired().HasMaxLength(2048);
 
+                // ==================== 修正：补全右括号 ====================
                 entity.Property(e => e.ParsedData)
                       .HasConversion(v => JsonSerializer.Serialize(v, _jsonOptions),
                                      v => JsonSerializer.Deserialize<Dictionary<string, object>>(v, _jsonOptions) ?? new())
@@ -81,9 +78,7 @@ namespace CrawlerMaster.WPF.Data
                                      v => JsonSerializer.Deserialize<List<string>>(v, _jsonOptions) ?? new List<string>())
                       .HasColumnType("TEXT");
             });
-            #endregion
 
-            #region 节点信息配置
             modelBuilder.Entity<NodeInfo>(entity =>
             {
                 entity.HasKey(e => e.NodeId);
@@ -93,7 +88,6 @@ namespace CrawlerMaster.WPF.Data
                 entity.Property(e => e.Status).HasConversion<string>().HasDefaultValue(NodeStatus.Pending);
                 entity.Property(e => e.LastHeartbeat).IsRequired().HasDefaultValueSql("DATETIME('now')");
             });
-            #endregion
 
             base.OnModelCreating(modelBuilder);
         }

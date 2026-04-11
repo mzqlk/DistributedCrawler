@@ -97,6 +97,17 @@ namespace CrawlerMaster.WPF
                 _healthCheckService = Host.Services.GetRequiredService<NodeHealthCheckService>();
                 _healthCheckService.Start();
 
+                // ==================== 修正：优先级队列测试任务（使用正确的服务获取方式） ====================
+                var scheduler = Host.Services.GetRequiredService<ITaskSchedulerService>();
+                var testTask = new CrawlerCore.Entities.CrawlerTask
+                {
+                    TaskName = "优先级测试任务-最高级",
+                    StartUrls = new List<string> { "https://test.com" },
+                    PluginName = "TestPlugin"
+                };
+                // 插入最高优先级任务（5级），使用 Fire-and-forget 避免阻塞 UI
+                _ = scheduler.ScheduleTaskAsync(testTask, 5);
+
                 // 6. 启动主窗口
                 var mainWindow = Host.Services.GetRequiredService<MainWindow>();
                 mainWindow.Show();
@@ -186,6 +197,11 @@ namespace CrawlerMaster.WPF
         sp.GetRequiredService<CrawlerCoordinatorService>());
 
             services.AddSingleton<GrpcAuthenticationInterceptor>();
+
+            // 同时注册为 IHostedService（后台运行）和 ITaskSchedulerService（对外接口）
+            services.AddSingleton<TaskSchedulerHostedService>();
+            services.AddHostedService(sp => sp.GetRequiredService<TaskSchedulerHostedService>());
+            services.AddSingleton<ITaskSchedulerService>(sp => sp.GetRequiredService<TaskSchedulerHostedService>());
 
             services.AddTransient<MainWindowViewModel>();
             services.AddTransient<MainWindow>(provider =>

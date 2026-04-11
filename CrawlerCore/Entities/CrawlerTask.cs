@@ -60,6 +60,11 @@ namespace CrawlerCore.Entities
         public DateTime CreatedAt { get; set; }
 
         /// <summary>
+        /// 任务优先级（1=最低，5=最高，默认1）
+        /// </summary>
+        public int Priority { get; set; } = 1;
+
+        /// <summary>
         /// 构造函数：初始化集合属性+动态默认值
         /// </summary>
         public CrawlerTask()
@@ -71,6 +76,7 @@ namespace CrawlerCore.Entities
             Status = TaskStatus.Pending;
             AssignedNode = string.Empty;
             PluginName = string.Empty;
+            Priority = 1;
 
             LogHelper.Info($"创建爬虫任务: TaskId={TaskId}, CreatedAt={CreatedAt:yyyy-MM-dd HH:mm:ss}");
         }

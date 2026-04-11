@@ -1,0 +1,240 @@
+﻿using CrawlerCore.Entities;
+using CrawlerCore.Interfaces;
+using CrawlerCore.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace CrawlerMaster.WPF.Services
+{
+    /// <summary>
+    /// 优先级任务调度后台服务（IHostedService，完美解决DI生命周期）
+    /// 优先级规则：数值越大优先级越高（1最低，5最高）
+    /// 相同优先级按入队顺序（FIFO）出队
+    /// </summary>
+    public class TaskSchedulerHostedService : BackgroundService, ITaskSchedulerService
+    {
+        // 线程安全优先级队列：使用元组 (Primary, Secondary) 实现大值优先 + FIFO
+        // Primary = int.MaxValue - priority （值越小优先级越高）
+        // Secondary = 入队序号（值越小越早入队）
+        private readonly PriorityQueue<CrawlerTask, (int Primary, long Secondary)> _taskQueue = new();
+        private readonly object _queueLock = new();
+        private int _queueCount = 0;
+        private long _enqueueCounter = 0;
+
+        // DI服务提供程序（用于创建Scoped作用域）
+        private readonly IServiceProvider _serviceProvider;
+
+        /// <summary>
+        /// 获取当前队列中的任务数量（线程安全）
+        /// </summary>
+        public int QueueCount
+        {
+            get
+            {
+                lock (_queueLock)
+                {
+                    return _queueCount;
+                }
+            }
+        }
+
+        // 构造函数：仅注入单例的 IServiceProvider
+        public TaskSchedulerHostedService(IServiceProvider serviceProvider)
+        {
+            _serviceProvider = serviceProvider;
+            LogHelper.Info("任务调度后台服务已初始化");
+        }
+
+        /// <summary>
+        /// 任务入队（带优先级校验，创建Scoped作用域保存数据库）
+        /// </summary>
+        /// <param name="task">爬虫任务</param>
+        /// <param name="priority">优先级（1-5）</param>
+        /// <returns>入队结果</returns>
+        public async Task<bool> ScheduleTaskAsync(CrawlerTask task, int priority = 1)
+        {
+            // 1. 空值校验
+            if (task == null)
+            {
+                LogHelper.Error("任务入队失败：任务实体为空");
+                return false;
+            }
+
+            // 2. 优先级范围校验（1-5）
+            if (priority < 1 || priority > 5)
+            {
+                LogHelper.Error($"任务入队失败：优先级{priority}超出范围[1-5]，TaskId={task.TaskId}");
+                return false;
+            }
+
+            // 3. 创建Scoped作用域，保存任务到数据库
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+                await taskDataService.AddTaskAsync(task);
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, $"任务入队失败：数据库保存异常，TaskId={task.TaskId}");
+                return false;
+            }
+
+            // 4. 赋值优先级并入队（线程安全 + FIFO保障）
+            task.Priority = priority;
+            lock (_queueLock)
+            {
+                var secondary = Interlocked.Increment(ref _enqueueCounter);
+                _taskQueue.Enqueue(task, (int.MaxValue - priority, secondary));
+                _queueCount++;
+            }
+
+            // 5. 结构化日志记录
+            LogHelper.Info($"任务入队成功：TaskId={task.TaskId}, TaskName={task.TaskName}, Priority={priority}, 当前队列数={_queueCount}");
+
+            return true;
+        }
+
+        /// <summary>
+        /// 非阻塞出队：获取最高优先级任务（优先级相同则按入队顺序）
+        /// </summary>
+        /// <param name="task">出队任务（空则为null）</param>
+        /// <returns>是否出队成功</returns>
+        public bool TryDequeue(out CrawlerTask? task)
+        {
+            lock (_queueLock)
+            {
+                var result = _taskQueue.TryDequeue(out task, out _);
+                if (result)
+                {
+                    _queueCount--;
+                    LogHelper.Info($"任务出队成功：TaskId={task!.TaskId}, Priority={task.Priority}, 剩余队列数={_queueCount}");
+                }
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// 分配任务到最优节点（基于负载均衡，创建Scoped作用域）
+        /// </summary>
+        public async Task<string?> AssignTaskToOptimalNodeAsync(string taskId)
+        {
+            LogHelper.Info($"开始分配任务到最优节点：TaskId={taskId}");
+
+            // 创建Scoped作用域
+            using var scope = _serviceProvider.CreateScope();
+            var nodeManager = scope.ServiceProvider.GetRequiredService<INodeManagementService>();
+            var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+
+            // 1. 获取所有在线节点
+            var activeNodes = await nodeManager.GetActiveNodesAsync();
+            if (activeNodes.Count == 0)
+            {
+                LogHelper.Warn($"任务分配失败：无可用在线节点，TaskId={taskId}");
+                return null;
+            }
+
+            // 2. 简单负载均衡：选择活跃任务数最少的节点
+            var optimalNode = activeNodes
+                .OrderBy(n => n.ActiveTasks)
+                .ThenBy(n => n.CpuUsage)
+                .FirstOrDefault();
+
+            if (optimalNode == null)
+            {
+                LogHelper.Warn($"任务分配失败：无法选择最优节点，TaskId={taskId}");
+                return null;
+            }
+
+            // 3. 更新任务状态和分配节点
+            var updateResult = await taskDataService.AssignNodeToTaskAsync(taskId, optimalNode.NodeId);
+            if (!updateResult)
+            {
+                LogHelper.Error($"任务分配失败：数据库更新异常，TaskId={taskId}, NodeId={optimalNode.NodeId}");
+                return null;
+            }
+
+            LogHelper.Info($"任务分配成功：TaskId={taskId}, NodeId={optimalNode.NodeId}");
+            return optimalNode.NodeId;
+        }
+
+        /// <summary>
+        /// 故障任务重分配（节点离线导致的未完成任务，预留）
+        /// </summary>
+        public async Task<int> ReassignFailedTasksAsync(string nodeId)
+        {
+            LogHelper.Warn($"节点离线，重分配任务：NodeId={nodeId}");
+
+            // 预留：需要 ITaskDataService 扩展 GetTasksByNodeIdAndStatusAsync 方法
+            // 1. 创建Scoped作用域
+            // 2. 获取该节点的所有运行中任务
+            // 3. 将任务状态重置为 Pending
+            // 4. 将任务重新入队
+            // 5. 返回重分配的任务数量
+
+            return await Task.FromResult(0);
+        }
+
+        /// <summary>
+        /// 后台调度循环（由 IHostedService 统一管理生命周期）
+        /// </summary>
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            LogHelper.Info("任务调度后台循环已启动");
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    // 1. 尝试出队最高优先级任务
+                    if (TryDequeue(out var task))
+                    {
+                        // 2. 分配任务到最优节点
+                        var nodeId = await AssignTaskToOptimalNodeAsync(task!.TaskId);
+
+                        // 3. 如果分配失败，将任务重新入队（延迟1秒，使用新的入队序号）
+                        if (nodeId == null)
+                        {
+                            await Task.Delay(1000, stoppingToken);
+                            lock (_queueLock)
+                            {
+                                var secondary = Interlocked.Increment(ref _enqueueCounter);
+                                _taskQueue.Enqueue(task, (int.MaxValue - task.Priority, secondary));
+                                _queueCount++;
+                            }
+                            LogHelper.Warn($"任务重新入队：TaskId={task.TaskId}, Priority={task.Priority}");
+                        }
+                    }
+                    else
+                    {
+                        // 4. 队列为空，延迟100ms再检查
+                        await Task.Delay(100, stoppingToken);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    LogHelper.Info("任务调度后台循环已取消");
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.Error(ex, "任务调度后台循环发生异常");
+                    await Task.Delay(1000, stoppingToken);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 优雅关闭（由 IHostedService 统一调用）
+        /// </summary>
+        public override async Task StopAsync(CancellationToken cancellationToken)
+        {
+            LogHelper.Info("任务调度后台服务正在停止...");
+            await base.StopAsync(cancellationToken);
+            LogHelper.Info("任务调度后台服务已停止");
+        }
+    }
+}

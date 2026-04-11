@@ -29,5 +29,12 @@ namespace CrawlerCore.Interfaces
         /// <param name="nodeId">离线的节点ID</param>
         /// <returns>成功重分配的任务数量</returns>
         Task<int> ReassignFailedTasksAsync(string nodeId);
+
+        /// <summary>
+        /// 非阻塞出队方法
+        /// </summary>
+        /// <param name="task">出队任务（空则为null）</param>
+        /// <returns>是否出队成功</returns>
+        bool TryDequeue(out CrawlerTask? task);
     }
 }
