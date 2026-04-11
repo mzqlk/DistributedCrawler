@@ -175,7 +175,10 @@ namespace CrawlerMaster.WPF
             // 节点健康检查服务（单例，因需持续运行）
             services.AddSingleton<NodeHealthCheckService>();
 
-            // ===== 任务1.5 核心服务注册 =====
+            // 核心服务注册
+            // 先注册负载均衡调度器
+            services.AddSingleton<LoadBalancingScheduler>();
+
             services.AddHostedService<GrpcHostedService>();
             services.AddSingleton<SessionManager>();
 

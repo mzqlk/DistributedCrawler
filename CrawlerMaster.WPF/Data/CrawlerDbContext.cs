@@ -83,8 +83,8 @@ namespace CrawlerMaster.WPF.Data
             {
                 entity.HasKey(e => e.NodeId);
                 entity.ToTable("NodeInfos");
-                entity.Property(e => e.MachineName).HasMaxLength(50);
-                entity.Property(e => e.IpAddress).HasMaxLength(39);
+                entity.Property(e => e.MachineName).HasMaxLength(256);
+                entity.Property(e => e.IpAddress).HasMaxLength(64);
                 entity.Property(e => e.Status).HasConversion<string>().HasDefaultValue(NodeStatus.Pending);
                 entity.Property(e => e.LastHeartbeat).IsRequired().HasDefaultValueSql("DATETIME('now')");
             });

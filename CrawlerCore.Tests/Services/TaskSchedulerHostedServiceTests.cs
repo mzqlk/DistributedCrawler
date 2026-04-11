@@ -51,6 +51,8 @@ namespace CrawlerCore.Tests.Services
             services.AddScoped(_ => _mockNodeManager.Object);
             services.AddScoped(_ => _mockTaskDataService.Object);
 
+            services.AddSingleton<LoadBalancingScheduler>();
+
             // 注册 TaskSchedulerHostedService（单例）
             services.AddSingleton<TaskSchedulerHostedService>();
             services.AddSingleton<ITaskSchedulerService>(sp => sp.GetRequiredService<TaskSchedulerHostedService>());

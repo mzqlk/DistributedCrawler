@@ -26,6 +26,8 @@ namespace CrawlerMaster.WPF.Services
 
         // DI服务提供程序（用于创建Scoped作用域）
         private readonly IServiceProvider _serviceProvider;
+        // 工作日22新增：注入负载均衡调度器（仅预留调用点）
+        private readonly LoadBalancingScheduler _loadBalancer;
 
         /// <summary>
         /// 获取当前队列中的任务数量（线程安全）
@@ -41,18 +43,18 @@ namespace CrawlerMaster.WPF.Services
             }
         }
 
-        // 构造函数：仅注入单例的 IServiceProvider
-        public TaskSchedulerHostedService(IServiceProvider serviceProvider)
+        // 构造函数：工作日22新增注入 LoadBalancingScheduler
+        public TaskSchedulerHostedService(IServiceProvider serviceProvider, LoadBalancingScheduler loadBalancer)
         {
             _serviceProvider = serviceProvider;
-            LogHelper.Info("任务调度后台服务已初始化");
+            _loadBalancer = loadBalancer; // 工作日22：注入调度器
+            LogHelper.Info("任务调度后台服务已初始化（已注入资源感知负载均衡调度器，预留调用点）");
         }
 
         /// <summary>
         /// 任务入队（带优先级校验，创建Scoped作用域保存数据库）
         /// </summary>
         /// <param name="task">爬虫任务</param>
-        /// <param name="priority">优先级（1-5）</param>
         /// <returns>入队结果</returns>
         public async Task<bool> ScheduleTaskAsync(CrawlerTask task)
         {
@@ -117,7 +119,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 分配任务到最优节点（基于负载均衡，创建Scoped作用域）
+        /// 分配任务到最优节点（工作日22：保留原有简单逻辑，新增调度器预留调用点）
         /// </summary>
         public async Task<string?> AssignTaskToOptimalNodeAsync(string taskId)
         {
@@ -136,7 +138,8 @@ namespace CrawlerMaster.WPF.Services
                 return null;
             }
 
-            // 2. 简单负载均衡：选择活跃任务数最少的节点
+            // 工作日22：【预留调用点】后续可替换为 _loadBalancer.SelectOptimalNode(activeNodes, task)
+            // 2. 原有简单负载均衡：选择活跃任务数最少的节点
             var optimalNode = activeNodes
                 .OrderBy(n => n.ActiveTasks)
                 .ThenBy(n => n.CpuUsage)
