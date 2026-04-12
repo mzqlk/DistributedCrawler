@@ -97,7 +97,11 @@ namespace CrawlerMaster.WPF
                 _healthCheckService = Host.Services.GetRequiredService<NodeHealthCheckService>();
                 _healthCheckService.Start();
 
-                // 6. 启动主窗口
+                // 6. 初始化故障任务恢复服务（解析单例实例，触发事件订阅）
+                var recoveryService = Host.Services.GetRequiredService<FailedTaskRecoveryService>();
+                Log.Information("故障任务恢复服务启动成功");
+
+                // 7. 启动主窗口
                 var mainWindow = Host.Services.GetRequiredService<MainWindow>();
                 mainWindow.Show();
             }
@@ -168,12 +172,15 @@ namespace CrawlerMaster.WPF
             services.AddDbContext<CrawlerDbContext>(options =>
                 options.UseSqlite(context.Configuration.GetConnectionString("ConnectionString")));
 
-            // 业务服务（原项目已有）
+            // 业务服务
             services.AddScoped<ITaskDataService, TaskDataService>();
             services.AddScoped<INodeManagementService, NodeManagementService>();
 
             // 节点健康检查服务（单例，因需持续运行）
             services.AddSingleton<NodeHealthCheckService>();
+
+            // 故障任务恢复服务（单例，事件驱动持续运行）
+            services.AddSingleton<FailedTaskRecoveryService>();
 
             // 核心服务注册
             // 先注册负载均衡调度器
@@ -212,13 +219,17 @@ namespace CrawlerMaster.WPF
             _healthCheckService?.Stop();
             _healthCheckService?.Dispose();
 
+            // 释放故障任务恢复服务
+            var recoveryService = Host.Services.GetService<FailedTaskRecoveryService>();
+            recoveryService?.Dispose();
+
             if (Host != null)
             {
                 await Host.StopAsync(TimeSpan.FromSeconds(5));
                 Host.Dispose();
             }
 
-            Log.CloseAndFlush();  // 原项目清理逻辑
+            Log.CloseAndFlush();
             base.OnExit(e);
         }
     }

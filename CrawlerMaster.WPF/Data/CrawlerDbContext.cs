@@ -36,7 +36,6 @@ namespace CrawlerMaster.WPF.Data
                 entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("DATETIME('now')");
                 entity.Property(e => e.Priority).HasDefaultValue(1).IsRequired();
 
-                // 新增：AssignedNode 和 Status 索引（提高任务分配/查询性能）
                 entity.HasIndex(e => e.AssignedNode);
                 entity.HasIndex(e => e.Status);
 
@@ -67,7 +66,6 @@ namespace CrawlerMaster.WPF.Data
                 entity.ToTable("PageResults");
                 entity.Property(e => e.Url).IsRequired().HasMaxLength(2048);
 
-                // ==================== 修正：补全右括号 ====================
                 entity.Property(e => e.ParsedData)
                       .HasConversion(v => JsonSerializer.Serialize(v, _jsonOptions),
                                      v => JsonSerializer.Deserialize<Dictionary<string, object>>(v, _jsonOptions) ?? new())

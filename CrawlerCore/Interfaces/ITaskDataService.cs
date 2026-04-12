@@ -52,5 +52,19 @@ namespace CrawlerCore.Interfaces
         /// <param name="taskId">任务ID</param>
         /// <returns>是否删除成功</returns>
         Task<bool> DeleteTaskAsync(string taskId);
+
+        /// <summary>
+        /// 获取指定节点上所有运行中的任务
+        /// </summary>
+        /// <param name="nodeId">节点唯一标识</param>
+        /// <returns>运行中任务完整实体列表</returns>
+        Task<List<CrawlerTask>> GetRunningTasksByNodeIdAsync(string nodeId);
+
+        /// <summary>
+        /// 事务化批量重置故障任务：仅将当前仍为Running的任务重置为Pending+清空分配节点
+        /// </summary>
+        /// <param name="taskIds">待重置的任务ID列表</param>
+        /// <returns>成功重置的任务完整实体列表（确保数据最新）</returns>
+        Task<List<CrawlerTask>> BatchResetFailedTasksAsync(List<string> taskIds);
     }
 }
