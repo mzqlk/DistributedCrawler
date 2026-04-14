@@ -100,6 +100,22 @@ namespace CrawlerMaster.WPF.Services
                 node.DiskUsagePercent = nodeInfo.DiskUsagePercent;
                 node.ActiveTasks = nodeInfo.ActiveTasks;
                 node.LastHeartbeat = nodeInfo.LastHeartbeat;
+
+                // 如果节点当前是 Offline，收到心跳后自动恢复为 Online
+                var oldStatus = node.Status;
+                if (oldStatus == NodeStatus.Offline)
+                {
+                    node.Status = NodeStatus.Online;
+
+                    // 保存后发布状态变更事件
+                    await _dbContext.SaveChangesAsync();
+
+                    _eventAggregator.Publish(this,
+                        new NodeStatusChangedEventArgs(node.NodeId, oldStatus, NodeStatus.Online, node));
+
+                    return true;
+                }
+
                 return await _dbContext.SaveChangesAsync() > 0;
             }
             finally

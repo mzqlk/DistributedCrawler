@@ -66,5 +66,12 @@ namespace CrawlerCore.Interfaces
         /// <param name="taskIds">待重置的任务ID列表</param>
         /// <returns>成功重置的任务完整实体列表（确保数据最新）</returns>
         Task<List<CrawlerTask>> BatchResetFailedTasksAsync(List<string> taskIds);
+
+        /// <summary>
+        /// 更新任务的完整信息（除TaskId外的所有字段）
+        /// </summary>
+        /// <param name="task">任务实体</param>
+        /// <returns>是否更新成功</returns>
+        Task<bool> UpdateTaskAsync(CrawlerTask task);
     }
 }

@@ -69,11 +69,10 @@ namespace CrawlerCore.Entities
         /// </summary>
         public NodeInfo()
         {
-            NodeId = NodeIdHelper.GetNodeId();
             LastHeartbeat = DateTime.UtcNow;
             Status = NodeStatus.Pending;
 
-            LogHelper.Info($"Worker节点信息创建: NodeId={NodeId}, LastHeartbeat={LastHeartbeat}");
+            LogHelper.Info($"LastHeartbeat={LastHeartbeat}");
         }
     }
 }

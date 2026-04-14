@@ -167,5 +167,14 @@ namespace CrawlerMaster.WPF.Services
                 return new List<CrawlerTask>();
             }
         }
+
+        public async Task<bool> UpdateTaskAsync(CrawlerTask task)
+        {
+            var existing = await _dbContext.CrawlerTasks.FindAsync(task.TaskId);
+            if (existing == null) return false;
+
+            _dbContext.Entry(existing).CurrentValues.SetValues(task);
+            return await _dbContext.SaveChangesAsync() > 0;
+        }
     }
 }

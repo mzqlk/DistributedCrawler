@@ -59,26 +59,43 @@ namespace CrawlerMaster.WPF.Services
         /// <returns>入队结果</returns>
         public async Task<bool> ScheduleTaskAsync(CrawlerTask task)
         {
-            // 1. 空值校验
+            // 空值校验
             if (task == null)
             {
                 LogHelper.Error("任务入队失败：任务实体为空");
                 return false;
             }
 
-            // 2. 优先级范围校验（1-5）
+            // 优先级范围校验（1-5）
             if (task.Priority < 1 || task.Priority > 5)
             {
                 LogHelper.Error($"任务入队失败：优先级{task.Priority}超出范围[1-5]，TaskId={task.TaskId}");
                 return false;
             }
 
-            // 3. 创建Scoped作用域，保存任务到数据库
+            // 使用 Scope 访问 Scoped 服务
+            using var scope = _scopeFactory.CreateScope();
+            var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+
             try
             {
-                using var scope = _scopeFactory.CreateScope();
-                var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
-                await taskDataService.AddTaskAsync(task);
+                // 检查任务是否已存在于数据库
+                var existingTask = await taskDataService.GetTaskByIdAsync(task.TaskId);
+                if (existingTask != null)
+                {
+                    // 已存在：仅更新状态为 Pending，清空分配节点（故障恢复场景）
+                    existingTask.Status = CrawlerCore.Entities.TaskStatus.Pending;
+                    existingTask.AssignedNode = string.Empty; // 清空原分配节点
+                    await taskDataService.UpdateTaskAsync(existingTask); // 需在 ITaskDataService 中添加 UpdateTaskAsync 方法
+
+                    LogHelper.Info($"已存在任务重新入队：TaskId={task.TaskId}, 状态已重置为Pending");
+                }
+                else
+                {
+                    // 不存在：正常插入数据库
+                    await taskDataService.AddTaskAsync(task);
+                    LogHelper.Info($"新任务已持久化：TaskId={task.TaskId}");
+                }
             }
             catch (Exception ex)
             {
@@ -86,7 +103,7 @@ namespace CrawlerMaster.WPF.Services
                 return false;
             }
 
-            // 4. 赋值优先级并入队（线程安全 + FIFO保障）
+            // 赋值优先级并入队（线程安全 + FIFO保障）
             lock (_queueLock)
             {
                 var secondary = Interlocked.Increment(ref _enqueueCounter);
@@ -94,7 +111,7 @@ namespace CrawlerMaster.WPF.Services
                 _queueCount++;
             }
 
-            // 5. 结构化日志记录
+            // 结构化日志记录
             LogHelper.Info($"任务入队成功：TaskId={task.TaskId}, TaskName={task.TaskName}, Priority={task.Priority}, 当前队列数={_queueCount}");
 
             return true;
