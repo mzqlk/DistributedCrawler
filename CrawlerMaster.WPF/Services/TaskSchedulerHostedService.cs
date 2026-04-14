@@ -24,9 +24,10 @@ namespace CrawlerMaster.WPF.Services
         private int _queueCount = 0;
         private long _enqueueCounter = 0;
 
+        private readonly ITaskDataService _taskDataService;
         // 服务范围工厂
         private readonly IServiceScopeFactory _scopeFactory;
-        // 工作日22新增：注入负载均衡调度器（仅预留调用点）
+        // 注入负载均衡调度器
         private readonly ILoadBalancingScheduler _loadBalancer;
 
         /// <summary>
@@ -43,11 +44,11 @@ namespace CrawlerMaster.WPF.Services
             }
         }
 
-        // 构造函数：工作日22新增注入 LoadBalancingScheduler
-        public TaskSchedulerHostedService(IServiceScopeFactory scopeFactory, ILoadBalancingScheduler loadBalancer)
+        public TaskSchedulerHostedService(ITaskDataService taskDataService, IServiceScopeFactory scopeFactory, ILoadBalancingScheduler loadBalancer)
         {
+            _taskDataService = taskDataService;
             _scopeFactory = scopeFactory;
-            _loadBalancer = loadBalancer; // 工作日22：注入调度器
+            _loadBalancer = loadBalancer;
             LogHelper.Info("任务调度后台服务已初始化（已注入资源感知负载均衡调度器，预留调用点）");
         }
 
@@ -178,23 +179,6 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 故障任务重分配（节点离线导致的未完成任务，预留）
-        /// </summary>
-        public async Task<int> ReassignFailedTasksAsync(string nodeId)
-        {
-            LogHelper.Warn($"节点离线，重分配任务：NodeId={nodeId}");
-
-            // 预留：需要 ITaskDataService 扩展 GetTasksByNodeIdAndStatusAsync 方法
-            // 1. 创建Scoped作用域
-            // 2. 获取该节点的所有运行中任务
-            // 3. 将任务状态重置为 Pending
-            // 4. 将任务重新入队
-            // 5. 返回重分配的任务数量
-
-            return await Task.FromResult(0);
-        }
-
-        /// <summary>
         /// 后台调度循环（由 IHostedService 统一管理生命周期）
         /// </summary>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -240,6 +224,56 @@ namespace CrawlerMaster.WPF.Services
                     LogHelper.Error(ex, "任务调度后台循环发生异常");
                     await Task.Delay(1000, stoppingToken).ConfigureAwait(false);
                 }
+            }
+        }
+
+        /// <summary>
+        /// 从数据库恢复未调度的Pending任务（重启自动入队）
+        /// 筛选条件：状态=Pending + 未分配节点 + 按创建时间升序执行
+        /// </summary>
+        public async Task RecoverPendingTasksFromDatabaseAsync()
+        {
+            try
+            {
+                LogHelper.Info("开始执行Master重启任务恢复，加载未调度的Pending任务");
+
+                // 1. 查询符合条件的任务：Pending状态 + 未分配节点
+                var allTasks = await _taskDataService.GetAllTasksAsync();
+                var pendingTasks = allTasks
+                    .Where(t => t.Status == CrawlerCore.Entities.TaskStatus.Pending
+                                && string.IsNullOrWhiteSpace(t.AssignedNode))
+                    .OrderBy(t => t.CreatedAt) // 按创建时间升序，保证先创建先调度
+                    .ToList();
+
+                if (!pendingTasks.Any())
+                {
+                    LogHelper.Info("无待恢复的未调度任务，恢复流程结束");
+                    return;
+                }
+
+                LogHelper.Info($"检测到 {pendingTasks.Count} 个待恢复任务，开始批量入队");
+
+                // 2. 逐个重新入队调度
+                int successCount = 0;
+                foreach (var task in pendingTasks)
+                {
+                    bool enqueueSuccess = await ScheduleTaskAsync(task);
+                    if (enqueueSuccess)
+                    {
+                        successCount++;
+                        LogHelper.Debug($"任务恢复入队成功 | TaskId:{task.TaskId} 优先级:{task.Priority}");
+                    }
+                    else
+                    {
+                        LogHelper.Error($"任务恢复入队失败 | TaskId:{task.TaskId}");
+                    }
+                }
+
+                LogHelper.Info($"任务恢复完成 | 总计:{pendingTasks.Count} 成功:{successCount} 失败:{pendingTasks.Count - successCount}");
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, "Master重启任务恢复流程执行异常");
             }
         }
 

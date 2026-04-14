@@ -31,14 +31,14 @@ namespace CrawlerMaster.WPF
 
             try
             {
-                // 1. 优先初始化日志（确保启动过程全链路可追溯）
+                // 优先初始化日志（确保启动过程全链路可追溯）
                 LogConfiguration.Configure("Master", Serilog.Events.LogEventLevel.Information);
                 Log.Information("Master 控制端启动，版本: {Version}", GetType().Assembly.GetName().Version);
 
-                // 2. 注册全局异常处理
+                // 注册全局异常处理
                 ConfigureGlobalExceptionHandling();
 
-                // 3. 构建通用主机，传入已初始化的 Logger
+                // 构建通用主机，传入已初始化的 Logger
                 Host = Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder(e.Args)
                     .UseSerilog(Log.Logger)          // 复用已有 Logger
                     .ConfigureServices(ConfigureServices)
@@ -46,16 +46,16 @@ namespace CrawlerMaster.WPF
 
                 await Host.StartAsync();
 
-                // 4. 数据库初始化
+                // 数据库初始化
                 using (var scope = Host.Services.CreateScope())
                 {
                     var dbContext = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
 
-                    // 1. 记录数据库文件路径（便于排查）
+                    // 记录数据库文件路径（便于排查）
                     var connString = dbContext.Database.GetConnectionString();
                     Log.Information("数据库连接字符串: {ConnectionString}", connString);
 
-                    // 2. 尝试连接并验证表结构
+                    // 尝试连接并验证表结构
                     bool needRecreate = false;
                     if (await dbContext.Database.CanConnectAsync())
                     {
@@ -80,7 +80,7 @@ namespace CrawlerMaster.WPF
                         await dbContext.Database.EnsureDeletedAsync();
                         await dbContext.Database.EnsureCreatedAsync();
 
-                        // 关键：再次验证 NodeInfos 表是否真的被创建
+                        // 再次验证 NodeInfos 表是否真的被创建
                         await VerifyTableExistsAsync(dbContext, "NodeInfos");
                     }
                 }
@@ -93,15 +93,23 @@ namespace CrawlerMaster.WPF
                     Log.Information("CrawlerCoordinatorService 已解析");
                 }
 
-                // 5. 启动节点健康检查定时器（从根容器获取单例服务）
+                //重启自动恢复未调度任务
+                using (var scope = Host.Services.CreateScope())
+                {
+                    // 通过 ITaskSchedulerService 接口调用，避免生命周期冲突
+                    var taskScheduler = scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
+                    await taskScheduler.RecoverPendingTasksFromDatabaseAsync();
+                }
+
+                // 启动节点健康检查定时器（从根容器获取单例服务）
                 _healthCheckService = Host.Services.GetRequiredService<NodeHealthCheckService>();
                 _healthCheckService.Start();
 
-                // 6. 初始化故障任务恢复服务（解析单例实例，触发事件订阅）
+                // 初始化故障任务恢复服务（解析单例实例，触发事件订阅）
                 var recoveryService = Host.Services.GetRequiredService<FailedTaskRecoveryService>();
                 Log.Information("故障任务恢复服务启动成功");
 
-                // 7. 启动主窗口
+                // 启动主窗口
                 var mainWindow = Host.Services.GetRequiredService<MainWindow>();
                 mainWindow.Show();
             }

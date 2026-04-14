@@ -12,7 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace CrawlerMaster.WPF.Services
 {
     /// <summary>
-    /// 故障任务恢复服务：严格100%匹配工作日24需求，监听节点离线事件，自动提取故障任务、重置状态、重入调度队列
+    /// 故障任务恢复服务：监听节点离线事件，自动提取故障任务、重置状态、重入调度队列
     /// 符合.NET/WPF最佳实践，线程安全，无生命周期问题，全链路异常防护
     /// </summary>
     public class FailedTaskRecoveryService : IDisposable

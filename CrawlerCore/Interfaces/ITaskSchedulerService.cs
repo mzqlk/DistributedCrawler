@@ -23,17 +23,15 @@ namespace CrawlerCore.Interfaces
         Task<string?> AssignTaskToOptimalNodeAsync(string taskId);
 
         /// <summary>
-        /// 重分配故障任务（节点离线导致的未完成任务）
-        /// </summary>
-        /// <param name="nodeId">离线的节点ID</param>
-        /// <returns>成功重分配的任务数量</returns>
-        Task<int> ReassignFailedTasksAsync(string nodeId);
-
-        /// <summary>
         /// 非阻塞出队方法
         /// </summary>
         /// <param name="task">出队任务（空则为null）</param>
         /// <returns>是否出队成功</returns>
         bool TryDequeue(out CrawlerTask? task);
+
+        /// <summary>
+        /// 从数据库恢复未调度的Pending任务（重启自动入队）
+        /// </summary>
+        Task RecoverPendingTasksFromDatabaseAsync();
     }
 }
