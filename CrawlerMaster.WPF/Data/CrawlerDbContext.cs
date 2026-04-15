@@ -1,6 +1,10 @@
 ﻿using CrawlerCore.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Configuration;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 
 namespace CrawlerMaster.WPF.Data
@@ -39,15 +43,29 @@ namespace CrawlerMaster.WPF.Data
                 entity.HasIndex(e => e.AssignedNode);
                 entity.HasIndex(e => e.Status);
 
+                // 修复：添加StartUrls的ValueComparer
                 entity.Property(e => e.StartUrls)
-                        .HasConversion(v => JsonSerializer.Serialize(v, _jsonOptions),
-                                    v => JsonSerializer.Deserialize<List<string>>(v, _jsonOptions) ?? new List<string>())
-                        .HasColumnType("TEXT");
+                        .HasConversion(
+                            v => JsonSerializer.Serialize(v, _jsonOptions),
+                            v => JsonSerializer.Deserialize<List<string>>(v, _jsonOptions) ?? new List<string>())
+                        .HasColumnType("TEXT")
+                        .Metadata.SetValueComparer(
+                            new ValueComparer<List<string>>(
+                                (c1, c2) => c1.SequenceEqual(c2),
+                                c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                                c => c.ToList()));
 
+                // 修复：添加Configuration的ValueComparer
                 entity.Property(e => e.Configuration)
-                        .HasConversion(v => JsonSerializer.Serialize(v, _jsonOptions),
-                                    v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, _jsonOptions) ?? new())
-                        .HasColumnType("TEXT");
+                        .HasConversion(
+                            v => JsonSerializer.Serialize(v, _jsonOptions),
+                            v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, _jsonOptions) ?? new Dictionary<string, string>())
+                        .HasColumnType("TEXT")
+                        .Metadata.SetValueComparer(
+                            new ValueComparer<Dictionary<string, string>>(
+                                (c1, c2) => c1.SequenceEqual(c2),
+                                c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.Key.GetHashCode(), v.Value.GetHashCode())),
+                                c => c.ToDictionary(x => x.Key, x => x.Value)));
             });
 
             modelBuilder.Entity<CrawlResult>(entity =>
@@ -66,15 +84,29 @@ namespace CrawlerMaster.WPF.Data
                 entity.ToTable("PageResults");
                 entity.Property(e => e.Url).IsRequired().HasMaxLength(2048);
 
+                // 修复：添加ParsedData的ValueComparer
                 entity.Property(e => e.ParsedData)
-                      .HasConversion(v => JsonSerializer.Serialize(v, _jsonOptions),
-                                     v => JsonSerializer.Deserialize<Dictionary<string, object>>(v, _jsonOptions) ?? new())
-                      .HasColumnType("TEXT");
+                      .HasConversion(
+                          v => JsonSerializer.Serialize(v, _jsonOptions),
+                          v => JsonSerializer.Deserialize<Dictionary<string, object>>(v, _jsonOptions) ?? new Dictionary<string, object>())
+                      .HasColumnType("TEXT")
+                      .Metadata.SetValueComparer(
+                          new ValueComparer<Dictionary<string, object>>(
+                              (c1, c2) => c1.SequenceEqual(c2),
+                              c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.Key.GetHashCode(), v.Value != null ? v.Value.GetHashCode() : 0)),
+                              c => c.ToDictionary(x => x.Key, x => x.Value)));
 
+                // 修复：添加Links的ValueComparer
                 entity.Property(e => e.Links)
-                      .HasConversion(v => JsonSerializer.Serialize(v, _jsonOptions),
-                                     v => JsonSerializer.Deserialize<List<string>>(v, _jsonOptions) ?? new List<string>())
-                      .HasColumnType("TEXT");
+                      .HasConversion(
+                          v => JsonSerializer.Serialize(v, _jsonOptions),
+                          v => JsonSerializer.Deserialize<List<string>>(v, _jsonOptions) ?? new List<string>())
+                      .HasColumnType("TEXT")
+                      .Metadata.SetValueComparer(
+                          new ValueComparer<List<string>>(
+                              (c1, c2) => c1.SequenceEqual(c2),
+                              c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                              c => c.ToList()));
             });
 
             modelBuilder.Entity<NodeInfo>(entity =>

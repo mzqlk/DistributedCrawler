@@ -5,50 +5,117 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="分布式爬虫管理系统" Height="450" Width="1000">
+        Title="分布式爬虫管理系统" Height="600" Width="1200">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- 工具栏 -->
         <ToolBar Grid.Row="0" Margin="5">
             <Button x:Name="RefreshButton" Content="刷新节点列表" Margin="5" Padding="10,5"/>
-            <!-- 新增测试按钮 -->
             <Button x:Name="TestDispatchButton" Content="测试下发任务" Margin="5" Padding="10,5" Click="TestDispatchButton_Click"/>
         </ToolBar>
 
-        <!-- 节点列表 -->
-        <DataGrid Grid.Row="1" ItemsSource="{Binding Nodes}" AutoGenerateColumns="False" 
-                  Margin="10" IsReadOnly="True" CanUserAddRows="False">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="节点ID" Binding="{Binding NodeId}" Width="*"/>
-                <DataGridTextColumn Header="机器名" Binding="{Binding MachineName}" Width="*"/>
-                <DataGridTextColumn Header="IP地址" Binding="{Binding IpAddress}" Width="*"/>
-                <DataGridTextColumn Header="CPU核心" Binding="{Binding CpuCores}" Width="80"/>
-                <DataGridTextColumn Header="总内存(GB)" Binding="{Binding TotalMemoryGb, StringFormat={}{0:F2}}" Width="100"/>
-                <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="80">
-                    <DataGridTextColumn.ElementStyle>
+        <!-- 内容区：节点列表 + 任务进度列表 -->
+        <Grid Grid.Row="1" Margin="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- 节点列表（左侧） -->
+            <DataGrid Grid.Column="0" ItemsSource="{Binding Nodes}" AutoGenerateColumns="False" 
+                      IsReadOnly="True" CanUserAddRows="False" Margin="0,0,5,0">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="节点ID" Binding="{Binding NodeId}" Width="*"/>
+                    <DataGridTextColumn Header="机器名" Binding="{Binding MachineName}" Width="*"/>
+                    <DataGridTextColumn Header="IP地址" Binding="{Binding IpAddress}" Width="*"/>
+                    <DataGridTextColumn Header="CPU核心" Binding="{Binding CpuCores}" Width="80"/>
+                    <DataGridTextColumn Header="总内存(GB)" Binding="{Binding TotalMemoryGb, StringFormat={}{0:F2}}" Width="100"/>
+                    <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="80">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Status}" Value="Online">
+                                        <Setter Property="Foreground" Value="Green"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Offline">
+                                        <Setter Property="Foreground" Value="Red"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Pending">
+                                        <Setter Property="Foreground" Value="Orange"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="CPU使用率" Binding="{Binding CpuUsage, StringFormat={}{0:F1}%}" Width="100"/>
+                    <DataGridTextColumn Header="内存使用(MB)" Binding="{Binding MemoryUsageMb, StringFormat={}{0:F0}}" Width="120"/>
+                    <DataGridTextColumn Header="最后心跳" Binding="{Binding LastHeartbeat, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="180"/>
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <!-- 任务进度列表（右侧） -->
+            <DataGrid Grid.Column="1" ItemsSource="{Binding Tasks}" AutoGenerateColumns="False" 
+                      IsReadOnly="True" CanUserAddRows="False" Margin="5,0,0,0">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="任务ID" Binding="{Binding TaskId}" Width="200"/>
+                    <DataGridTextColumn Header="任务名称" Binding="{Binding TaskName}" Width="*"/>
+                    <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="80">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Status}" Value="Running">
+                                        <Setter Property="Foreground" Value="Blue"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Completed">
+                                        <Setter Property="Foreground" Value="Green"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Failed">
+                                        <Setter Property="Foreground" Value="Red"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Pending">
+                                        <Setter Property="Foreground" Value="Orange"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="进度" Binding="{Binding ProgressPercent, StringFormat={}{0:F1}%}" Width="80"/>
+                    <DataGridTextColumn Header="完成页数" Binding="{Binding CompletedPages}" Width="80"/>
+                    <DataGridTextColumn Header="总页数" Binding="{Binding TotalPages}" Width="80"/>
+                    <DataGridTextColumn Header="执行节点" Binding="{Binding AssignedNode}" Width="*"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+
+        <!-- 状态栏 -->
+        <StatusBar Grid.Row="2" Margin="5,0">
+            <StatusBarItem>
+                <TextBlock Text="实时连接状态："/>
+            </StatusBarItem>
+            <StatusBarItem>
+                <TextBlock Text="{Binding ConnectionState}">
+                    <TextBlock.Style>
                         <Style TargetType="TextBlock">
                             <Style.Triggers>
-                                <DataTrigger Binding="{Binding Status}" Value="Online">
+                                <DataTrigger Binding="{Binding IsSignalRConnected}" Value="True">
                                     <Setter Property="Foreground" Value="Green"/>
                                 </DataTrigger>
-                                <DataTrigger Binding="{Binding Status}" Value="Offline">
+                                <DataTrigger Binding="{Binding IsSignalRConnected}" Value="False">
                                     <Setter Property="Foreground" Value="Red"/>
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Status}" Value="Pending">
-                                    <Setter Property="Foreground" Value="Orange"/>
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
-                    </DataGridTextColumn.ElementStyle>
-                </DataGridTextColumn>
-                <DataGridTextColumn Header="CPU使用率" Binding="{Binding CpuUsage, StringFormat={}{0:F1}%}" Width="100"/>
-                <DataGridTextColumn Header="内存使用(MB)" Binding="{Binding MemoryUsageMb, StringFormat={}{0:F0}}" Width="120"/>
-                <DataGridTextColumn Header="最后心跳" Binding="{Binding LastHeartbeat, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="180"/>
-            </DataGrid.Columns>
-        </DataGrid>
+                    </TextBlock.Style>
+                </TextBlock>
+            </StatusBarItem>
+        </StatusBar>
     </Grid>
 </Window>
