@@ -22,8 +22,8 @@
     </PackageReference>
 	<!-- gRPC测试依赖（无ASP.NET Core Web依赖） -->
 	<PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
-	<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
-	<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
+	<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.6" />
+	<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.6" />
   </ItemGroup>
 
   <ItemGroup>

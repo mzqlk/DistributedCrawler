@@ -1,7 +1,7 @@
 ﻿namespace CrawlerCore.Infrastructure
 {
     /// <summary>
-    /// 爬虫全局配置项（100%对齐原项目appsettings.json规范）
+    /// 爬虫全局配置项
     /// </summary>
     public class CrawlerSettings
     {
@@ -11,5 +11,6 @@
         public int RequestTimeoutSeconds { get; set; } = 30;
         public int MaxConcurrentRequests { get; set; } = 10;
         public int DelayBetweenRequestsMs { get; set; } = 1000;
+        public bool EnableProgressSimulation { get; set; } = false;
     }
 }
