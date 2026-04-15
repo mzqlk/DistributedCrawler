@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using CrawlerCore.Events;
 using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
 using CrawlerCore.Protos;
@@ -42,11 +43,16 @@ namespace CrawlerCore.Tests.Grpc
 
             // 创建服务实例（注意：此处使用 NullLogger，事件测试时使用真实实例）
             var mockNodeMgmt = new Mock<INodeManagementService>();
+            var mockEventAgg = new Mock<IEventAggregator>();
+            var mockServiceProvider = new Mock<IServiceProvider>();
+
             _service = new CrawlerCoordinatorService(
                 _sessionManager,
                 mockNodeMgmt.Object,
                 options,
-                NullLogger<CrawlerCoordinatorService>.Instance);
+                NullLogger<CrawlerCoordinatorService>.Instance,
+                mockEventAgg.Object,
+                mockServiceProvider.Object);
 
             // 创建 gRPC 服务器，并添加认证拦截器
             _server = new Server
@@ -187,11 +193,15 @@ namespace CrawlerCore.Tests.Grpc
             // Arrange
             // 创建一个新的事件可测试的服务实例
             var mockNodeMgmt = new Mock<INodeManagementService>();
+            var mockEventAgg = new Mock<IEventAggregator>();
+            var mockServiceProvider = new Mock<IServiceProvider>();
             var eventService = new CrawlerCoordinatorService(
     new SessionManager(NullLogger<SessionManager>.Instance),
     mockNodeMgmt.Object,
     Options.Create(_grpcSettings),
-    NullLogger<CrawlerCoordinatorService>.Instance);
+    NullLogger<CrawlerCoordinatorService>.Instance,
+    mockEventAgg.Object,
+    mockServiceProvider.Object);
             NodeRegistration receivedRegistration = null;
             var tcs = new TaskCompletionSource<bool>();
 

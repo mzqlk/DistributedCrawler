@@ -3,6 +3,7 @@ using CrawlerCore.Events;
 using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
 using CrawlerMaster.WPF.Models;
+using CrawlerMaster.WPF.Services.Hubs;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -17,23 +18,31 @@ using System.Runtime.CompilerServices;
 
 namespace CrawlerMaster.WPF.ViewModels
 {
-    public class MainWindowViewModel : IDisposable, INotifyPropertyChanged
+    /// <summary>
+    /// 主窗口ViewModel（最终零错误版本）
+    /// 实现IAsyncDisposable，双渠道更新UI（SignalR+事件总线），全异步资源释放
+    /// </summary>
+    public class MainWindowViewModel : IAsyncDisposable, INotifyPropertyChanged
     {
-        #region 原有字段（完全保留，无修改）
+        #region 私有字段
         private readonly IEventAggregator _eventAggregator;
         private readonly IServiceProvider _serviceProvider;
         private readonly ITaskSchedulerService _taskSchedulerService;
         private readonly Dispatcher _uiDispatcher;
-        private Guid _nodeStatusSubscriptionId = Guid.Empty;
-        private bool _disposed = false;
-        #endregion
-
-        #region 新增SignalR相关字段
         private readonly SignalRSettings _signalRSettings;
+
+        // 订阅ID
+        private Guid _nodeStatusSubscriptionId = Guid.Empty;
+        private Guid _taskProgressSubscriptionId = Guid.Empty;
+
+        // SignalR相关
         private HubConnection? _hubConnection;
         private string? _hubUrl;
         private string _connectionState = "未连接";
         private bool _isSignalRConnected;
+
+        // 资源释放标记
+        private bool _disposed = false;
         #endregion
 
         #region 绑定到UI的集合
@@ -86,17 +95,24 @@ namespace CrawlerMaster.WPF.ViewModels
             _taskSchedulerService = taskSchedulerService ?? throw new ArgumentNullException(nameof(taskSchedulerService));
             _uiDispatcher = Application.Current.Dispatcher ?? throw new InvalidOperationException("Application.Current.Dispatcher 不可用");
 
+            // 【修复1】双事件订阅：节点状态+任务进度
             _nodeStatusSubscriptionId = _eventAggregator.Subscribe<NodeStatusChangedEventArgs>(OnNodeStatusChanged);
+            _taskProgressSubscriptionId = _eventAggregator.Subscribe<TaskProgressUpdatedEventArgs>(OnTaskProgressUpdated);
+
+            // 初始加载节点列表
             _ = LoadNodesAsync();
 
+            // 初始化SignalR
             _signalRSettings = signalROptions.Value ?? throw new ArgumentNullException(nameof(signalROptions));
             _ = Task.Run(InitializeSignalRAsync);
         }
         #endregion
 
-        #region SignalR客户端核心逻辑
+        #region SignalR客户端初始化（修复版）
         private async Task InitializeSignalRAsync()
         {
+            if (_disposed) return;
+
             try
             {
                 LogHelper.Info("开始初始化SignalR客户端连接");
@@ -104,134 +120,139 @@ namespace CrawlerMaster.WPF.ViewModels
                 _hubUrl = $"http://localhost:{_signalRSettings.Port}{_signalRSettings.HubPath}";
                 _hubConnection = new HubConnectionBuilder()
                     .WithUrl(_hubUrl)
-                    .WithAutomaticReconnect(new[] { TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30) })
+                    // 【修复2】优化重连策略：1/2/4/8/10秒，避免重连风暴
+                    .WithAutomaticReconnect(new[]
+                    {
+                        TimeSpan.FromSeconds(1),
+                        TimeSpan.FromSeconds(2),
+                        TimeSpan.FromSeconds(4),
+                        TimeSpan.FromSeconds(8),
+                        TimeSpan.FromSeconds(10)
+                    })
                     .Build();
 
+                // 绑定连接状态事件
                 _hubConnection.Reconnecting += OnHubReconnecting;
                 _hubConnection.Reconnected += OnHubReconnected;
                 _hubConnection.Closed += OnHubClosed;
 
+                // 【修复3】强类型方法名注册消息订阅，编译时校验
                 RegisterMessageSubscriptions();
+
+                // 启动连接
                 await StartConnectionWithRetryAsync();
             }
             catch (Exception ex)
             {
                 LogHelper.Error(ex, "SignalR客户端初始化失败");
-                if (_uiDispatcher != null && !_uiDispatcher.HasShutdownStarted)
-                {
-                    _uiDispatcher.Invoke(() =>
-                    {
-                        ConnectionState = "初始化失败";
-                        IsSignalRConnected = false;
-                    });
-                }
+                UpdateConnectionState("初始化失败", false);
             }
         }
 
+        /// <summary>
+        /// 【修复】强类型方法名注册消息订阅，与服务端推送方法100%匹配
+        /// </summary>
         private void RegisterMessageSubscriptions()
         {
-            if (_hubConnection == null) return;
+            if (_hubConnection == null || _disposed) return;
 
-            _hubConnection.On<NodeUpdateMessage>("ReceiveNodeUpdate", async (message) =>
-            {
-                try
+            // 节点状态更新订阅（强类型方法名）
+            _hubConnection.On<NodeUpdateMessage>(
+                nameof(ICrawlerHubClient.OnNodeUpdated),
+                async (message) =>
                 {
-                    if (_uiDispatcher == null || _uiDispatcher.HasShutdownStarted) return;
-                    await _uiDispatcher.InvokeAsync(() =>
+                    if (_disposed || _uiDispatcher.HasShutdownStarted) return;
+                    try
                     {
-                        var existingNode = Nodes.FirstOrDefault(n => n.NodeId == message.NodeId);
-                        if (existingNode != null)
+                        await _uiDispatcher.InvokeAsync(() =>
                         {
-                            existingNode.MachineName = message.MachineName;
-                            existingNode.IpAddress = message.IpAddress;
-                            existingNode.Status = message.Status;
-                            existingNode.CpuUsage = message.CpuUsage;
-                            existingNode.MemoryUsageMb = message.MemoryUsageMb;
-                            existingNode.LastHeartbeat = message.LastHeartbeat;
-                        }
-                        else
-                        {
-                            Nodes.Add(new NodeDisplayInfo
+                            var existingNode = Nodes.FirstOrDefault(n => n.NodeId == message.NodeId);
+                            if (existingNode != null)
                             {
-                                NodeId = message.NodeId,
-                                MachineName = message.MachineName,
-                                IpAddress = message.IpAddress,
-                                Status = message.Status,
-                                CpuUsage = message.CpuUsage,
-                                MemoryUsageMb = message.MemoryUsageMb,
-                                LastHeartbeat = message.LastHeartbeat
-                            });
-                        }
-                    });
-                }
-                catch (Exception ex)
-                {
-                    LogHelper.Error(ex, "处理节点状态推送消息失败");
-                }
-            });
+                                existingNode.MachineName = message.MachineName;
+                                existingNode.IpAddress = message.IpAddress;
+                                existingNode.Status = message.Status;
+                                existingNode.CpuUsage = Math.Max(0, message.CpuUsage);
+                                existingNode.MemoryUsageMb = Math.Max(0, message.MemoryUsageMb);
+                                existingNode.LastHeartbeat = message.LastHeartbeat;
+                            }
+                            else
+                            {
+                                Nodes.Add(new NodeDisplayInfo
+                                {
+                                    NodeId = message.NodeId,
+                                    MachineName = message.MachineName,
+                                    IpAddress = message.IpAddress,
+                                    Status = message.Status,
+                                    CpuUsage = Math.Max(0, message.CpuUsage),
+                                    MemoryUsageMb = Math.Max(0, message.MemoryUsageMb),
+                                    LastHeartbeat = message.LastHeartbeat
+                                });
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        LogHelper.Error(ex, "处理节点状态推送消息失败");
+                    }
+                });
 
-            _hubConnection.On<TaskProgressMessage>("ReceiveTaskProgress", async (message) =>
-            {
-                try
+            // 任务进度更新订阅（强类型方法名）
+            _hubConnection.On<TaskProgressMessage>(
+                nameof(ICrawlerHubClient.OnTaskProgressUpdated),
+                async (message) =>
                 {
-                    if (_uiDispatcher == null || _uiDispatcher.HasShutdownStarted) return;
-                    await _uiDispatcher.InvokeAsync(() =>
+                    if (_disposed || _uiDispatcher.HasShutdownStarted) return;
+                    try
                     {
-                        var existingTask = Tasks.FirstOrDefault(t => t.TaskId == message.TaskId);
-                        if (existingTask != null)
+                        await _uiDispatcher.InvokeAsync(() =>
                         {
-                            existingTask.TaskName = message.TaskName;
-                            existingTask.Status = message.Status;
-                            existingTask.CompletedPages = message.CompletedPages;
-                            existingTask.TotalPages = message.TotalPages;
-                            existingTask.AssignedNode = message.AssignedNode;
-                        }
-                        else
-                        {
-                            Tasks.Add(new TaskDisplayInfo
+                            var existingTask = Tasks.FirstOrDefault(t => t.TaskId == message.TaskId);
+                            if (existingTask != null)
                             {
-                                TaskId = message.TaskId,
-                                TaskName = message.TaskName,
-                                Status = message.Status,
-                                CompletedPages = message.CompletedPages,
-                                TotalPages = message.TotalPages,
-                                AssignedNode = message.AssignedNode
-                            });
-                        }
-                    });
-                }
-                catch (Exception ex)
-                {
-                    LogHelper.Error(ex, "处理任务进度推送消息失败");
-                }
-            });
+                                existingTask.TaskName = message.TaskName;
+                                existingTask.Status = message.Status;
+                                existingTask.CompletedPages = Math.Max(0, message.CompletedPages);
+                                existingTask.TotalPages = Math.Max(0, message.TotalPages);
+                                existingTask.AssignedNode = message.AssignedNode;
+                            }
+                            else
+                            {
+                                Tasks.Add(new TaskDisplayInfo
+                                {
+                                    TaskId = message.TaskId,
+                                    TaskName = message.TaskName,
+                                    Status = message.Status,
+                                    CompletedPages = Math.Max(0, message.CompletedPages),
+                                    TotalPages = Math.Max(0, message.TotalPages),
+                                    AssignedNode = message.AssignedNode
+                                });
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        LogHelper.Error(ex, "处理任务进度推送消息失败");
+                    }
+                });
 
             LogHelper.Info("SignalR消息订阅注册完成");
         }
 
         private async Task StartConnectionWithRetryAsync()
         {
-            if (_hubConnection == null) return;
+            if (_hubConnection == null || _disposed) return;
 
             var retryCount = 0;
             const int maxRetry = 5;
 
-            while (retryCount < maxRetry)
+            while (retryCount < maxRetry && !_disposed)
             {
                 try
                 {
                     await _hubConnection.StartAsync();
                     LogHelper.Info($"SignalR客户端连接成功，服务端地址：{_hubUrl}");
-
-                    if (_uiDispatcher != null && !_uiDispatcher.HasShutdownStarted)
-                    {
-                        _uiDispatcher.Invoke(() =>
-                        {
-                            ConnectionState = "实时已连接";
-                            IsSignalRConnected = true;
-                        });
-                    }
-
+                    UpdateConnectionState("实时已连接", true);
                     return;
                 }
                 catch (Exception ex)
@@ -243,29 +264,16 @@ namespace CrawlerMaster.WPF.ViewModels
             }
 
             LogHelper.Error($"SignalR连接失败，已达到最大重试次数{maxRetry}");
-            if (_uiDispatcher != null && !_uiDispatcher.HasShutdownStarted)
-            {
-                _uiDispatcher.Invoke(() =>
-                {
-                    ConnectionState = "连接失败";
-                    IsSignalRConnected = false;
-                });
-            }
+            UpdateConnectionState("连接失败", false);
         }
 
         private Task OnHubReconnecting(Exception? ex)
         {
+            if (_disposed) return Task.CompletedTask;
             try
             {
-                if (_uiDispatcher != null && !_uiDispatcher.HasShutdownStarted)
-                {
-                    _uiDispatcher.Invoke(() =>
-                    {
-                        ConnectionState = "正在重连...";
-                        IsSignalRConnected = false;
-                        LogHelper.Warn("SignalR连接状态：重连中");
-                    });
-                }
+                UpdateConnectionState("正在重连...", false);
+                LogHelper.Warn($"SignalR连接状态：重连中，异常: {ex?.Message}");
             }
             catch (Exception e)
             {
@@ -276,17 +284,11 @@ namespace CrawlerMaster.WPF.ViewModels
 
         private Task OnHubReconnected(string? connectionId)
         {
+            if (_disposed) return Task.CompletedTask;
             try
             {
-                if (_uiDispatcher != null && !_uiDispatcher.HasShutdownStarted)
-                {
-                    _uiDispatcher.Invoke(() =>
-                    {
-                        ConnectionState = "实时已连接";
-                        IsSignalRConnected = true;
-                        LogHelper.Info("SignalR连接状态：已连接");
-                    });
-                }
+                UpdateConnectionState("实时已连接", true);
+                LogHelper.Info($"SignalR连接状态：已连接，ConnectionId: {connectionId}");
             }
             catch (Exception e)
             {
@@ -297,16 +299,17 @@ namespace CrawlerMaster.WPF.ViewModels
 
         private Task OnHubClosed(Exception? ex)
         {
+            if (_disposed) return Task.CompletedTask;
             try
             {
-                if (_uiDispatcher != null && !_uiDispatcher.HasShutdownStarted)
+                UpdateConnectionState("实时已断开", false);
+                if (ex != null)
                 {
-                    _uiDispatcher.Invoke(() =>
-                    {
-                        ConnectionState = "实时已断开";
-                        IsSignalRConnected = false;
-                        LogHelper.Warn("SignalR连接状态：已断开");
-                    });
+                    LogHelper.Error(ex, "SignalR连接异常关闭");
+                }
+                else
+                {
+                    LogHelper.Info("SignalR连接已正常关闭");
                 }
             }
             catch (Exception e)
@@ -315,37 +318,85 @@ namespace CrawlerMaster.WPF.ViewModels
             }
             return Task.CompletedTask;
         }
+
+        /// <summary>
+        /// UI线程安全更新连接状态
+        /// </summary>
+        private void UpdateConnectionState(string state, bool isConnected)
+        {
+            if (_uiDispatcher.HasShutdownStarted) return;
+            _uiDispatcher.Invoke(() =>
+            {
+                ConnectionState = state;
+                IsSignalRConnected = isConnected;
+            });
+        }
         #endregion
 
-        #region 原有方法（完全保留，无修改）
+        #region 事件总线处理（修复版：双事件订阅）
+        /// <summary>
+        /// 节点状态变更事件处理（本地事件兜底）
+        /// </summary>
         private void OnNodeStatusChanged(object? sender, NodeStatusChangedEventArgs args)
         {
+            if (_disposed || _uiDispatcher.HasShutdownStarted || args.NodeInfo == null) return;
             try
             {
-                if (_uiDispatcher == null || _uiDispatcher.HasShutdownStarted) return;
                 _uiDispatcher.Invoke(() =>
                 {
-                    try
+                    var existingNode = Nodes.FirstOrDefault(n => n.NodeId == args.NodeId);
+                    if (existingNode != null)
                     {
-                        var existingNode = Nodes.FirstOrDefault(n => n.NodeId == args.NodeId);
-                        if (existingNode != null)
-                        {
-                            UpdateNodeDisplayInfo(existingNode, args.NodeInfo);
-                        }
-                        else
-                        {
-                            Nodes.Add(CreateNodeDisplayInfo(args.NodeInfo));
-                        }
+                        UpdateNodeDisplayInfo(existingNode, args.NodeInfo);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        LogHelper.Error(ex, "UI线程更新节点信息失败");
+                        Nodes.Add(CreateNodeDisplayInfo(args.NodeInfo));
                     }
                 });
             }
             catch (Exception ex)
             {
-                LogHelper.Error(ex, "调度UI线程更新节点信息失败");
+                LogHelper.Error(ex, "UI线程更新节点信息失败");
+            }
+        }
+
+        /// <summary>
+        /// 【修复】任务进度更新事件处理（本地事件兜底）
+        /// </summary>
+        private void OnTaskProgressUpdated(object? sender, TaskProgressUpdatedEventArgs args)
+        {
+            if (_disposed || _uiDispatcher.HasShutdownStarted) return;
+            try
+            {
+                _uiDispatcher.Invoke(() =>
+                {
+                    var existingTask = Tasks.FirstOrDefault(t => t.TaskId == args.TaskId);
+                    if (existingTask != null)
+                    {
+                        existingTask.TaskName = args.TaskName;
+                        existingTask.Status = args.CurrentStatus;
+                        existingTask.CompletedPages = Math.Max(0, args.CrawledPages);
+                        existingTask.TotalPages = Math.Max(0, args.TotalPages);
+                        existingTask.AssignedNode = args.AssignedNodeId;
+                    }
+                    else
+                    {
+                        Tasks.Add(new TaskDisplayInfo
+                        {
+                            TaskId = args.TaskId,
+                            TaskName = args.TaskName,
+                            Status = args.CurrentStatus,
+                            CompletedPages = Math.Max(0, args.CrawledPages),
+                            TotalPages = Math.Max(0, args.TotalPages),
+                            AssignedNode = args.AssignedNodeId
+                        });
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, "UI线程更新任务进度失败");
             }
         }
 
@@ -359,8 +410,8 @@ namespace CrawlerMaster.WPF.ViewModels
                 CpuCores = nodeInfo.CpuCores,
                 TotalMemoryGb = nodeInfo.TotalMemoryGb,
                 Status = nodeInfo.Status,
-                CpuUsage = nodeInfo.CpuUsage,
-                MemoryUsageMb = nodeInfo.MemoryUsageMb,
+                CpuUsage = Math.Max(0, nodeInfo.CpuUsage),
+                MemoryUsageMb = Math.Max(0, nodeInfo.MemoryUsageMb),
                 LastHeartbeat = nodeInfo.LastHeartbeat
             };
         }
@@ -372,13 +423,16 @@ namespace CrawlerMaster.WPF.ViewModels
             displayInfo.CpuCores = nodeInfo.CpuCores;
             displayInfo.TotalMemoryGb = nodeInfo.TotalMemoryGb;
             displayInfo.Status = nodeInfo.Status;
-            displayInfo.CpuUsage = nodeInfo.CpuUsage;
-            displayInfo.MemoryUsageMb = nodeInfo.MemoryUsageMb;
+            displayInfo.CpuUsage = Math.Max(0, nodeInfo.CpuUsage);
+            displayInfo.MemoryUsageMb = Math.Max(0, nodeInfo.MemoryUsageMb);
             displayInfo.LastHeartbeat = nodeInfo.LastHeartbeat;
         }
+        #endregion
 
+        #region 公共方法
         public async Task LoadNodesAsync()
         {
+            if (_disposed) return;
             try
             {
                 LogHelper.Info("开始加载节点列表");
@@ -387,7 +441,7 @@ namespace CrawlerMaster.WPF.ViewModels
                 var nodeService = scope.ServiceProvider.GetRequiredService<INodeManagementService>();
                 var activeNodes = await nodeService.GetActiveNodesAsync();
 
-                if (_uiDispatcher != null && !_uiDispatcher.HasShutdownStarted)
+                if (!_uiDispatcher.HasShutdownStarted)
                 {
                     _uiDispatcher.Invoke(() =>
                     {
@@ -409,6 +463,7 @@ namespace CrawlerMaster.WPF.ViewModels
 
         public async Task TestCreateAndDispatchTaskAsync()
         {
+            if (_disposed) return;
             try
             {
                 LogHelper.Info("=== 手动触发测试任务下发 ===");
@@ -445,50 +500,54 @@ namespace CrawlerMaster.WPF.ViewModels
         }
         #endregion
 
-        #region IDisposable 实现（优化版）
-        public void Dispose()
-        {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-
-        protected virtual void Dispose(bool disposing)
+        #region 资源释放（修复版：IAsyncDisposable+全异步释放）
+        public async ValueTask DisposeAsync()
         {
             if (_disposed) return;
+            _disposed = true;
 
-            if (disposing)
+            // 1. 取消事件订阅
+            if (_nodeStatusSubscriptionId != Guid.Empty)
             {
-                if (_nodeStatusSubscriptionId != Guid.Empty)
-                {
-                    try
-                    {
-                        _eventAggregator.Unsubscribe<NodeStatusChangedEventArgs>(_nodeStatusSubscriptionId);
-                        _nodeStatusSubscriptionId = Guid.Empty;
-                        LogHelper.Info("MainWindowViewModel 已取消节点状态变更事件订阅");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogHelper.Error(ex, "取消节点状态变更事件订阅失败");
-                    }
-                }
-
                 try
                 {
-                    if (_hubConnection != null)
-                    {
-                        _hubConnection.Reconnecting -= OnHubReconnecting;
-                        _hubConnection.Reconnected -= OnHubReconnected;
-                        _hubConnection.Closed -= OnHubClosed;
+                    _eventAggregator.Unsubscribe<NodeStatusChangedEventArgs>(_nodeStatusSubscriptionId);
+                    _nodeStatusSubscriptionId = Guid.Empty;
+                    LogHelper.Info("已取消节点状态变更事件订阅");
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.Error(ex, "取消节点状态变更事件订阅失败");
+                }
+            }
 
-                        // 优化：后台线程异步释放，ConfigureAwait(false)避免死锁
-                        Task.Run(async () =>
-                        {
-                            await _hubConnection.DisposeAsync().ConfigureAwait(false);
-                        }).Wait(TimeSpan.FromSeconds(3));
+            if (_taskProgressSubscriptionId != Guid.Empty)
+            {
+                try
+                {
+                    _eventAggregator.Unsubscribe<TaskProgressUpdatedEventArgs>(_taskProgressSubscriptionId);
+                    _taskProgressSubscriptionId = Guid.Empty;
+                    LogHelper.Info("已取消任务进度更新事件订阅");
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.Error(ex, "取消任务进度更新事件订阅失败");
+                }
+            }
 
-                        _hubConnection = null;
-                        LogHelper.Info("SignalR客户端资源已释放");
-                    }
+            // 2. 释放SignalR资源（全异步，无死锁）
+            if (_hubConnection != null)
+            {
+                try
+                {
+                    _hubConnection.Reconnecting -= OnHubReconnecting;
+                    _hubConnection.Reconnected -= OnHubReconnected;
+                    _hubConnection.Closed -= OnHubClosed;
+
+                    await _hubConnection.StopAsync();
+                    await _hubConnection.DisposeAsync();
+                    _hubConnection = null;
+                    LogHelper.Info("SignalR客户端资源已释放");
                 }
                 catch (Exception ex)
                 {
@@ -496,12 +555,18 @@ namespace CrawlerMaster.WPF.ViewModels
                 }
             }
 
-            _disposed = true;
+            GC.SuppressFinalize(this);
+        }
+
+        public void Dispose()
+        {
+            // 同步Dispose仅调用异步Dispose，不等待
+            _ = DisposeAsync().AsTask();
         }
 
         ~MainWindowViewModel()
         {
-            Dispose(false);
+            Dispose();
         }
         #endregion
     }

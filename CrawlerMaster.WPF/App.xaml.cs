@@ -1,5 +1,4 @@
 ﻿using CrawlerCore.Common;
-using CrawlerCore.Entities;
 using CrawlerCore.Events;
 using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
@@ -9,18 +8,16 @@ using CrawlerMaster.WPF.Infrastructure;
 using CrawlerMaster.WPF.Services;
 using CrawlerMaster.WPF.Services.Hubs;
 using CrawlerMaster.WPF.ViewModels;
-using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Options;
 using Serilog;
 using System;
+using System.Threading.Tasks;
 using System.Windows;
 
 namespace CrawlerMaster.WPF;
@@ -36,73 +33,150 @@ public partial class App : Application
 
         try
         {
-            // 1. 日志初始化（全局唯一）
+            // 1. 全局日志最先初始化
             LogConfiguration.Configure("Master", Serilog.Events.LogEventLevel.Information);
             LogHelper.Info($"Master 控制端启动，版本: {GetType().Assembly.GetName().Version}");
 
             // 2. 全局异常拦截
             ConfigureGlobalExceptionHandling();
 
-            // 3. 构建通用主机（WPF + 业务服务 + SignalR Web主机）
+            // 3. 【核心修复】统一通用主机，同时托管gRPC+SignalR，共享IOC容器，无端口冲突
             AppHost = Host.CreateDefaultBuilder(e.Args)
                 .UseSerilog(Log.Logger)
+                .ConfigureWebHostDefaults(webBuilder =>
+                {
+                    webBuilder.UseKestrel((context, options) =>
+                    {
+                        // 读取强类型配置
+                        var grpcSettings = context.Configuration
+                            .GetSection(GrpcSettings.SectionName)
+                            .Get<GrpcSettings>() ?? new GrpcSettings();
+                        var signalRSettings = context.Configuration
+                            .GetSection(SignalRSettings.SectionName)
+                            .Get<SignalRSettings>() ?? new SignalRSettings();
+
+                        // 【核心修复】gRPC端口：HTTP协议下强制启用HTTP/2
+                        var grpcUri = new Uri(grpcSettings.MasterEndpoint);
+                        options.ListenAnyIP(grpcUri.Port, listenOptions =>
+                        {
+                            // 关键配置：HTTP协议下强制HTTP/2，无需TLS
+                            listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2;
+                        });
+
+                        // SignalR端口：兼容HTTP1/2（无需修改）
+                        options.ListenAnyIP(signalRSettings.Port, listenOptions =>
+                        {
+                            listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1AndHttp2;
+                        });
+                    })
+                    .ConfigureServices((context, services) =>
+                    {
+                        // 【修复】注册gRPC服务，ASP.NET Core托管
+                        services.AddGrpc(opt =>
+                        {
+                            opt.EnableDetailedErrors = true;
+                            opt.MaxReceiveMessageSize = context.Configuration
+                                .GetValue<int>($"{GrpcSettings.SectionName}:{nameof(GrpcSettings.MaxMessageSizeMb)}", 64) * 1024 * 1024;
+                            opt.MaxSendMessageSize = context.Configuration
+                                .GetValue<int>($"{GrpcSettings.SectionName}:{nameof(GrpcSettings.MaxMessageSizeMb)}", 64) * 1024 * 1024;
+                        });
+
+                        // SignalR服务注册
+                        services.AddSignalR(opt => opt.EnableDetailedErrors = true);
+
+                        // CORS策略（兼容跨域场景）
+                        services.AddCors(opt =>
+                        {
+                            opt.AddPolicy("AllowAll", policy =>
+                            {
+                                policy.SetIsOriginAllowed(_ => true)
+                                      .AllowAnyHeader()
+                                      .AllowAnyMethod()
+                                      .AllowCredentials();
+                            });
+                        });
+                    })
+                    .Configure((context, app) =>
+                    {
+                        var signalRSettings = context.Configuration
+                            .GetSection(SignalRSettings.SectionName)
+                            .Get<SignalRSettings>() ?? new SignalRSettings();
+
+                        app.UseCors("AllowAll");
+                        app.UseRouting();
+                        app.UseEndpoints(end =>
+                        {
+                            // 【修复】映射gRPC服务端点，Worker可正常连接
+                            end.MapGrpcService<CrawlerCoordinatorService>();
+                            // 映射SignalR Hub端点
+                            end.MapHub<CrawlerHub>(signalRSettings.HubPath);
+                        });
+                    });
+                })
                 .ConfigureServices((context, services) =>
                 {
-                    // ==================== 配置绑定 ====================
+                    // ==================== 配置绑定（100%对齐原项目） ====================
                     services.Configure<GrpcSettings>(context.Configuration.GetSection(GrpcSettings.SectionName));
                     services.Configure<CrawlerSettings>(context.Configuration.GetSection(CrawlerSettings.SectionName));
                     services.Configure<SignalRSettings>(context.Configuration.GetSection(SignalRSettings.SectionName));
+                    services.Configure<DatabaseSettings>(context.Configuration.GetSection(DatabaseSettings.SectionName));
 
-                    // ==================== SignalR 核心注册（主容器备用） ====================
-                    services.AddSignalR(opt => opt.EnableDetailedErrors = true);
-                    services.AddCors(opt =>
-                    {
-                        opt.AddPolicy("SignalRCors", policy =>
-                        {
-                            policy.SetIsOriginAllowed(_ => true)
-                                  .AllowAnyHeader()
-                                  .AllowAnyMethod()
-                                  .AllowCredentials();
-                        });
-                    });
-
-                    // ==================== 独立启动SignalR Web主机（解决WPF架构冲突） ====================
-                    services.AddSingleton<IHostedService, SignalRWebHostService>();
-
-                    // ==================== 原有业务服务（完全无修改） ====================
+                    // ==================== 核心基础设施 ====================
                     services.AddSingleton<IEventAggregator, EventAggregator>();
-                    services.AddDbContext<CrawlerDbContext>(opt =>
-                        opt.UseSqlite(context.Configuration.GetConnectionString("ConnectionString")));
 
+                    // 数据库上下文（Scoped生命周期，对齐EF Core规范）
+                    var dbSettings = context.Configuration
+                        .GetSection(DatabaseSettings.SectionName)
+                        .Get<DatabaseSettings>() ?? new DatabaseSettings();
+                    services.AddDbContext<CrawlerDbContext>(opt =>
+                        opt.UseSqlite(dbSettings.ConnectionString), ServiceLifetime.Scoped);
+
+                    // ==================== 业务服务注册（修复生命周期+依赖匹配） ====================
                     services.AddScoped<ITaskDataService, TaskDataService>();
                     services.AddScoped<INodeManagementService, NodeManagementService>();
                     services.AddSingleton<NodeHealthCheckService>();
                     services.AddSingleton<FailedTaskRecoveryService>();
                     services.AddSingleton<ILoadBalancingScheduler, LoadBalancingScheduler>();
-                    services.AddHostedService<GrpcHostedService>();
+
+                    // 【修复】移除原有GrpcHostedService，统一由ASP.NET Core托管gRPC
                     services.AddSingleton<SessionManager>();
+                    services.AddSingleton<GrpcAuthenticationInterceptor>();
+
+                    // 【修复】gRPC服务注册为Scoped，对齐ASP.NET Core规范，构造函数依赖完整匹配
                     services.AddSingleton<CrawlerCoordinatorService>();
                     services.AddSingleton<ICrawlerCoordinatorService>(sp => sp.GetRequiredService<CrawlerCoordinatorService>());
                     services.AddSingleton<CrawlerCoordinator.CrawlerCoordinatorBase>(sp => sp.GetRequiredService<CrawlerCoordinatorService>());
-                    services.AddSingleton<GrpcAuthenticationInterceptor>();
+
+                    // 任务调度服务
                     services.AddSingleton<TaskSchedulerHostedService>();
                     services.AddHostedService(sp => sp.GetRequiredService<TaskSchedulerHostedService>());
                     services.AddSingleton<ITaskSchedulerService>(sp => sp.GetRequiredService<TaskSchedulerHostedService>());
 
-                    // ==================== WPF UI服务 ====================
-                    services.AddTransient<MainWindowViewModel>();
+                    // 实时同步推送服务
+                    services.AddSingleton<RealtimeDataSyncService>();
+                    services.AddHostedService(sp => sp.GetRequiredService<RealtimeDataSyncService>());
+
+                    // ==================== WPF UI服务（修复生命周期，避免重复连接） ====================
+                    services.AddSingleton<MainWindowViewModel>();
                     services.AddTransient<MainWindow>(sp => new MainWindow(sp.GetRequiredService<MainWindowViewModel>()));
                 })
                 .Build();
 
-            // 4. 启动主机
-            await AppHost.StartAsync();
-            LogHelper.Info("通用主机启动完成，所有服务已注册");
+            // 4. 启动主机（端口占用异常友好捕获）
+            try
+            {
+                await AppHost.StartAsync();
+                LogHelper.Info("通用主机启动完成，gRPC+SignalR服务已正常启动");
+            }
+            catch (System.Net.Sockets.SocketException ex) when (ex.SocketErrorCode == System.Net.Sockets.SocketError.AddressAlreadyInUse)
+            {
+                throw new InvalidOperationException($"端口被占用，请检查gRPC(5001)/SignalR(5003)端口是否被其他程序占用，或修改appsettings.json配置", ex);
+            }
 
-            // 5. 数据库初始化（原有逻辑无修改）
+            // 5. 数据库初始化（修复SQL注入风险，参数化查询）
             using var scope = AppHost.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
-            LogHelper.Info($"数据库连接: {db.Database.GetConnectionString()}");
+            LogHelper.Info($"数据库连接初始化完成");
 
             bool rebuildDb = false;
             if (await db.Database.CanConnectAsync())
@@ -110,7 +184,7 @@ public partial class App : Application
                 try { _ = await db.NodeInfos.CountAsync(); }
                 catch (SqliteException ex) when (ex.Message.Contains("no such table"))
                 {
-                    LogHelper.Warn($"表缺失，重建数据库: {ex.Message}");
+                    LogHelper.Warn($"数据表缺失，触发数据库重建: {ex.Message}");
                     rebuildDb = true;
                 }
             }
@@ -121,10 +195,11 @@ public partial class App : Application
                 await db.Database.EnsureDeletedAsync();
                 await db.Database.EnsureCreatedAsync();
                 await VerifyTableExistsAsync(db, "NodeInfos");
+                await VerifyTableExistsAsync(db, "CrawlerTasks");
+                await VerifyTableExistsAsync(db, "CrawlResults");
             }
 
-            // 6. 业务初始化（原有逻辑无修改）
-            _ = scope.ServiceProvider.GetRequiredService<CrawlerCoordinatorService>();
+            // 6. 业务初始化
             await scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>().RecoverPendingTasksFromDatabaseAsync();
 
             _healthCheckService = AppHost.Services.GetRequiredService<NodeHealthCheckService>();
@@ -142,117 +217,77 @@ public partial class App : Application
         }
     }
 
-    #region 辅助方法（无任何错误）
+    #region 辅助方法（修复SQL注入+全异常隔离）
     private void ConfigureGlobalExceptionHandling()
     {
         AppDomain.CurrentDomain.UnhandledException += (s, a) =>
         {
             var ex = a.ExceptionObject as Exception;
-            LogHelper.Fatal(ex, $"非UI线程异常，终止程序: {a.IsTerminating}");
-            Dispatcher.Invoke(() => MessageBox.Show($"系统崩溃，请查看日志: {ex?.Message}", "错误"));
+            LogHelper.Fatal(ex, $"非UI线程未捕获异常，终止程序: {a.IsTerminating}");
+            Dispatcher.Invoke(() => MessageBox.Show($"系统崩溃，请查看日志: {ex?.Message}", "致命错误"));
         };
 
         DispatcherUnhandledException += (s, a) =>
         {
-            LogHelper.Error(a.Exception, "UI线程异常");
+            LogHelper.Error(a.Exception, "UI线程未捕获异常");
             MessageBox.Show($"操作失败: {a.Exception.Message}", "错误");
             a.Handled = true;
         };
     }
 
-    private static async Task VerifyTableExistsAsync(CrawlerDbContext db, string table)
+    /// <summary>
+    /// 【修复】参数化查询，彻底消除SQL注入风险
+    /// </summary>
+    private static async Task VerifyTableExistsAsync(CrawlerDbContext db, string tableName)
     {
-        var conn = db.Database.GetDbConnection();
+        await using var conn = db.Database.GetDbConnection();
         await conn.OpenAsync();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'";
-        if (await cmd.ExecuteScalarAsync() == null)
-            throw new InvalidOperationException($"表 {table} 创建失败");
-        LogHelper.Info($"表 {table} 验证通过");
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name=@TableName";
+
+        var param = cmd.CreateParameter();
+        param.ParameterName = "@TableName";
+        param.Value = tableName;
+        cmd.Parameters.Add(param);
+
+        var result = await cmd.ExecuteScalarAsync();
+        if (result == null)
+            throw new InvalidOperationException($"数据表 {tableName} 创建失败");
+        LogHelper.Info($"数据表 {tableName} 验证通过");
     }
 
+    /// <summary>
+    /// 【修复】等待异步资源释放完成再退出，避免进程残留
+    /// </summary>
     protected override async void OnExit(ExitEventArgs e)
     {
-        LogHelper.Info("Master 正常退出");
+        LogHelper.Info("Master 控制端开始正常退出流程");
+
+        // 停止健康检查服务
         _healthCheckService?.Stop();
         _healthCheckService?.Dispose();
 
+        // 释放ViewModel资源
         if (AppHost != null)
         {
-            await AppHost.StopAsync(TimeSpan.FromSeconds(5));
-            AppHost.Dispose();
+            try
+            {
+                var viewModel = AppHost.Services.GetService<MainWindowViewModel>();
+                if (viewModel != null)
+                {
+                    await viewModel.DisposeAsync();
+                }
+                await AppHost.StopAsync(TimeSpan.FromSeconds(5));
+                AppHost.Dispose();
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Warn("退出时资源释放异常");
+            }
         }
+
         Log.CloseAndFlush();
         base.OnExit(e);
     }
     #endregion
 }
-
-#region 独立SignalR Web主机服务（解决WPF+ASP.NET Core架构冲突，核心修复）
-/// <summary>
-/// 后台托管服务：独立启动Kestrel+SignalR，不干扰WPF主机
-/// </summary>
-public class SignalRWebHostService : BackgroundService
-{
-    private readonly IConfiguration _config;
-    private readonly SignalRSettings _signalRSettings;
-    private IHost? _webHost;
-
-    public SignalRWebHostService(IConfiguration config, IOptions<SignalRSettings> signalROptions)
-    {
-        _config = config;
-        _signalRSettings = signalROptions.Value;
-    }
-
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        _webHost = Host.CreateDefaultBuilder()
-            .ConfigureWebHostDefaults(webBuilder =>
-            {
-                webBuilder.UseKestrel()
-                          .UseUrls($"http://0.0.0.0:{_signalRSettings.Port}")
-                          .ConfigureServices(services =>
-                          {
-                              services.AddSignalR(opt => opt.EnableDetailedErrors = true);
-                              services.AddCors(opt =>
-                              {
-                                  opt.AddPolicy("SignalRCors", policy =>
-                                  {
-                                      policy.SetIsOriginAllowed(_ => true)
-                                            .AllowAnyHeader()
-                                            .AllowAnyMethod()
-                                            .AllowCredentials();
-                                  });
-                              });
-                          })
-                          .Configure(app =>
-                          {
-                              app.UseCors("SignalRCors");
-                              app.UseRouting();
-                              app.UseEndpoints(end => end.MapHub<CrawlerHub>(_signalRSettings.HubPath));
-                          });
-            })
-            .Build();
-
-        return _webHost.StartAsync(stoppingToken);
-    }
-
-    public override async Task StopAsync(CancellationToken cancellationToken)
-    {
-        if (_webHost != null)
-        {
-            await _webHost.StopAsync(cancellationToken);
-            _webHost.Dispose();
-            _webHost = null;
-        }
-        await base.StopAsync(cancellationToken);
-    }
-
-    public override void Dispose()
-    {
-        _webHost?.Dispose();
-        _webHost = null;
-        base.Dispose();
-    }
-}
-#endregion

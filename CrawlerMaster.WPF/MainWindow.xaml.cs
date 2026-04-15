@@ -1,7 +1,5 @@
-﻿using CrawlerCore.Entities;
-using CrawlerMaster.WPF.Data;
-using CrawlerMaster.WPF.ViewModels;
-using Microsoft.EntityFrameworkCore;
+﻿using CrawlerMaster.WPF.ViewModels;
+using System;
 using System.Windows;
 
 namespace CrawlerMaster.WPF
@@ -25,10 +23,15 @@ namespace CrawlerMaster.WPF
             await _viewModel.TestCreateAndDispatchTaskAsync();
         }
 
-        protected override void OnClosed(EventArgs e)
+        /// <summary>
+        /// 【修复】窗口关闭时异步调用DisposeAsync，确保资源完整释放
+        /// </summary>
+        protected override async void OnClosed(EventArgs e)
         {
-            // 清理 ViewModel 资源
-            _viewModel.Dispose();
+            if (_viewModel != null)
+            {
+                await _viewModel.DisposeAsync();
+            }
             base.OnClosed(e);
         }
     }
