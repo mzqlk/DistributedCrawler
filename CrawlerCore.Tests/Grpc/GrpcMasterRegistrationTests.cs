@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CrawlerCore.Tests.Grpc
 {
@@ -44,7 +45,10 @@ namespace CrawlerCore.Tests.Grpc
             // 创建服务实例（注意：此处使用 NullLogger，事件测试时使用真实实例）
             var mockNodeMgmt = new Mock<INodeManagementService>();
             var mockEventAgg = new Mock<IEventAggregator>();
-            var mockServiceProvider = new Mock<IServiceProvider>();
+            // 使用真实的 ServiceProvider，以保证 CreateScope/GetRequiredService 可用
+            var services = new ServiceCollection();
+            services.AddSingleton<INodeManagementService>(mockNodeMgmt.Object);
+            var serviceProvider = services.BuildServiceProvider();
 
             _service = new CrawlerCoordinatorService(
                 _sessionManager,
@@ -52,7 +56,7 @@ namespace CrawlerCore.Tests.Grpc
                 options,
                 NullLogger<CrawlerCoordinatorService>.Instance,
                 mockEventAgg.Object,
-                mockServiceProvider.Object);
+                serviceProvider);
 
             // 创建 gRPC 服务器，并添加认证拦截器
             _server = new Server
@@ -194,14 +198,17 @@ namespace CrawlerCore.Tests.Grpc
             // 创建一个新的事件可测试的服务实例
             var mockNodeMgmt = new Mock<INodeManagementService>();
             var mockEventAgg = new Mock<IEventAggregator>();
-            var mockServiceProvider = new Mock<IServiceProvider>();
+            // 使用真实 ServiceProvider
+            var services = new ServiceCollection();
+            services.AddSingleton<INodeManagementService>(mockNodeMgmt.Object);
+            var serviceProvider = services.BuildServiceProvider();
             var eventService = new CrawlerCoordinatorService(
     new SessionManager(NullLogger<SessionManager>.Instance),
     mockNodeMgmt.Object,
     Options.Create(_grpcSettings),
     NullLogger<CrawlerCoordinatorService>.Instance,
     mockEventAgg.Object,
-    mockServiceProvider.Object);
+    serviceProvider);
             NodeRegistration receivedRegistration = null;
             var tcs = new TaskCompletionSource<bool>();
 

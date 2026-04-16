@@ -40,7 +40,7 @@ public partial class App : Application
             // 2. 全局异常拦截
             ConfigureGlobalExceptionHandling();
 
-            // 3. 【核心修复】统一通用主机，同时托管gRPC+SignalR，共享IOC容器，无端口冲突
+            // 3. 统一通用主机，同时托管gRPC+SignalR，共享IOC容器，无端口冲突
             AppHost = Host.CreateDefaultBuilder(e.Args)
                 .UseSerilog(Log.Logger)
                 .ConfigureWebHostDefaults(webBuilder =>
@@ -55,15 +55,15 @@ public partial class App : Application
                             .GetSection(SignalRSettings.SectionName)
                             .Get<SignalRSettings>() ?? new SignalRSettings();
 
-                        // 【核心修复】gRPC端口：HTTP协议下强制启用HTTP/2
+                        // gRPC端口：HTTP协议下强制启用HTTP/2
                         var grpcUri = new Uri(grpcSettings.MasterEndpoint);
                         options.ListenAnyIP(grpcUri.Port, listenOptions =>
                         {
-                            // 关键配置：HTTP协议下强制HTTP/2，无需TLS
+                            // HTTP协议下强制HTTP/2，无需TLS
                             listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2;
                         });
 
-                        // SignalR端口：兼容HTTP1/2（无需修改）
+                        // SignalR端口：兼容HTTP1/2
                         options.ListenAnyIP(signalRSettings.Port, listenOptions =>
                         {
                             listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1AndHttp2;
@@ -71,7 +71,7 @@ public partial class App : Application
                     })
                     .ConfigureServices((context, services) =>
                     {
-                        // 【修复】注册gRPC服务，ASP.NET Core托管
+                        // 注册gRPC服务，ASP.NET Core托管
                         services.AddGrpc(opt =>
                         {
                             opt.EnableDetailedErrors = true;
@@ -106,7 +106,7 @@ public partial class App : Application
                         app.UseRouting();
                         app.UseEndpoints(end =>
                         {
-                            // 【修复】映射gRPC服务端点，Worker可正常连接
+                            // 映射gRPC服务端点，Worker可正常连接
                             end.MapGrpcService<CrawlerCoordinatorService>();
                             // 映射SignalR Hub端点
                             end.MapHub<CrawlerHub>(signalRSettings.HubPath);
@@ -115,7 +115,7 @@ public partial class App : Application
                 })
                 .ConfigureServices((context, services) =>
                 {
-                    // ==================== 配置绑定（100%对齐原项目） ====================
+                    // ==================== 配置绑定 ====================
                     services.Configure<GrpcSettings>(context.Configuration.GetSection(GrpcSettings.SectionName));
                     services.Configure<CrawlerSettings>(context.Configuration.GetSection(CrawlerSettings.SectionName));
                     services.Configure<SignalRSettings>(context.Configuration.GetSection(SignalRSettings.SectionName));
@@ -131,18 +131,16 @@ public partial class App : Application
                     services.AddDbContext<CrawlerDbContext>(opt =>
                         opt.UseSqlite(dbSettings.ConnectionString), ServiceLifetime.Scoped);
 
-                    // ==================== 业务服务注册（修复生命周期+依赖匹配） ====================
+                    // ==================== 业务服务注册 ====================
                     services.AddScoped<ITaskDataService, TaskDataService>();
                     services.AddScoped<INodeManagementService, NodeManagementService>();
                     services.AddSingleton<NodeHealthCheckService>();
                     services.AddSingleton<FailedTaskRecoveryService>();
                     services.AddSingleton<ILoadBalancingScheduler, LoadBalancingScheduler>();
 
-                    // 【修复】移除原有GrpcHostedService，统一由ASP.NET Core托管gRPC
                     services.AddSingleton<SessionManager>();
                     services.AddSingleton<GrpcAuthenticationInterceptor>();
 
-                    // 【修复】gRPC服务注册为Scoped，对齐ASP.NET Core规范，构造函数依赖完整匹配
                     services.AddSingleton<CrawlerCoordinatorService>();
                     services.AddSingleton<ICrawlerCoordinatorService>(sp => sp.GetRequiredService<CrawlerCoordinatorService>());
                     services.AddSingleton<CrawlerCoordinator.CrawlerCoordinatorBase>(sp => sp.GetRequiredService<CrawlerCoordinatorService>());
@@ -156,7 +154,7 @@ public partial class App : Application
                     services.AddSingleton<RealtimeDataSyncService>();
                     services.AddHostedService(sp => sp.GetRequiredService<RealtimeDataSyncService>());
 
-                    // ==================== WPF UI服务（修复生命周期，避免重复连接） ====================
+                    // ==================== WPF UI服务 ====================
                     services.AddSingleton<MainWindowViewModel>();
                     services.AddTransient<MainWindow>(sp => new MainWindow(sp.GetRequiredService<MainWindowViewModel>()));
                 })
@@ -173,7 +171,7 @@ public partial class App : Application
                 throw new InvalidOperationException($"端口被占用，请检查gRPC(5001)/SignalR(5003)端口是否被其他程序占用，或修改appsettings.json配置", ex);
             }
 
-            // 5. 数据库初始化（修复SQL注入风险，参数化查询）
+            // 5. 数据库初始化
             using var scope = AppHost.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
             LogHelper.Info($"数据库连接初始化完成");
@@ -236,7 +234,7 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// 【修复】参数化查询，彻底消除SQL注入风险
+    /// 参数化查询
     /// </summary>
     private static async Task VerifyTableExistsAsync(CrawlerDbContext db, string tableName)
     {
@@ -257,7 +255,7 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// 【修复】等待异步资源释放完成再退出，避免进程残留
+    /// 等待异步资源释放完成再退出，避免进程残留
     /// </summary>
     protected override async void OnExit(ExitEventArgs e)
     {

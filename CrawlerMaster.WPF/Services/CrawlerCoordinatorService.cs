@@ -157,6 +157,23 @@ namespace CrawlerMaster.WPF.Services
                     NodeStatus.Online,
                     new NodeInfo { LastHeartbeat = DateTime.UtcNow }));
 
+                // 触发内部的 NodeRegistered 事件，确保订阅者能收到通知（线程安全，隔离异常）
+                var nodeRegisteredHandler = Volatile.Read(ref _nodeRegistered);
+                if (nodeRegisteredHandler != null)
+                {
+                    foreach (Action<NodeRegistration> subscriber in nodeRegisteredHandler.GetInvocationList())
+                    {
+                        try
+                        {
+                            subscriber.Invoke(request);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "执行 NodeRegistered 订阅者时发生异常");
+                        }
+                    }
+                }
+
                 var configResponse = new SystemConfig
                 {
                     HeartbeatIntervalSeconds = _grpcSettings.HeartbeatIntervalSeconds,

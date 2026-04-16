@@ -24,7 +24,7 @@ namespace CrawlerMaster.WPF
         }
 
         /// <summary>
-        /// 【修复】窗口关闭时异步调用DisposeAsync，确保资源完整释放
+        /// 窗口关闭时异步调用DisposeAsync，确保资源完整释放
         /// </summary>
         protected override async void OnClosed(EventArgs e)
         {

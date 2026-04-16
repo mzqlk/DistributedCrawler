@@ -17,6 +17,7 @@ namespace CrawlerWorker.Tests.Services
         private readonly Mock<IWorkerSessionManager> _mockSessionManager;
         private readonly Mock<IHostApplicationLifetime> _mockAppLifetime;
         private readonly IOptions<GrpcSettings> _grpcSettingsOptions;
+        private readonly IOptions<CrawlerSettings> _crawlerSettingsOptions;
         private readonly TestableWorkerHostedService _service;
 
         // 派生类，暴露受保护/私有方法
@@ -27,8 +28,9 @@ namespace CrawlerWorker.Tests.Services
                 INodeInfoCollector nodeInfoCollector,
                 IWorkerSessionManager sessionManager,
                 IOptions<GrpcSettings> grpcSettings,
+                IOptions<CrawlerSettings> crawlerSettings,
                 IHostApplicationLifetime appLifetime)
-                : base(grpcClientManager, nodeInfoCollector, sessionManager, grpcSettings, appLifetime)
+                : base(grpcClientManager, nodeInfoCollector, sessionManager, grpcSettings, crawlerSettings, appLifetime)
             {
             }
 
@@ -51,11 +53,18 @@ namespace CrawlerWorker.Tests.Services
             };
             _grpcSettingsOptions = Options.Create(grpcSettings);
 
+            var crawlerSettings = new CrawlerSettings
+            {
+                // 初始化 CrawlerSettings 的属性
+            };
+            _crawlerSettingsOptions = Options.Create(crawlerSettings);
+
             _service = new TestableWorkerHostedService(
                 _mockGrpcClientManager.Object,
                 _mockNodeInfoCollector.Object,
                 _mockSessionManager.Object,
                 _grpcSettingsOptions,
+                _crawlerSettingsOptions,
                 _mockAppLifetime.Object);
         }
 

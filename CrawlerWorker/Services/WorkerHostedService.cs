@@ -2,6 +2,7 @@
 using CrawlerCore.Infrastructure.Constants;
 using CrawlerCore.Protos;
 using CrawlerWorker.Communication;
+using CrawlerWorker.Services.Simulation;
 using Grpc.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -16,8 +17,7 @@ using Channel = System.Threading.Channels.Channel;
 namespace CrawlerWorker.Services
 {
     /// <summary>
-    /// Worker核心生命周期托管服务，严格对齐原项目流程
-    /// 修复竞态、优雅关闭、内存泄漏、事件异常隔离等所有问题
+    /// Worker核心生命周期托管服务
     /// </summary>
     public class WorkerHostedService : BackgroundService, IDisposable
     {
@@ -25,13 +25,14 @@ namespace CrawlerWorker.Services
         private readonly INodeInfoCollector _nodeInfoCollector;
         private readonly IWorkerSessionManager _sessionManager;
         private readonly GrpcSettings _grpcSettings;
+        private readonly CrawlerSettings _crawlerSettings;
         private readonly IHostApplicationLifetime _appLifetime;
         private readonly object _streamLock = new();
         private readonly object _eventLock = new();
         private bool _disposed = false;
         private readonly ConcurrentQueue<CrawlerCore.Entities.CrawlerTask> _localTaskQueue = new();
 
-        #region 事件定义（线程安全，异常隔离）
+        #region 事件定义
         private Func<NodeRegistration, RegistrationResponse, CancellationToken, Task>? _nodeRegistered;
         public event Func<NodeRegistration, RegistrationResponse, CancellationToken, Task> NodeRegistered
         {
@@ -83,17 +84,23 @@ namespace CrawlerWorker.Services
         private int _reconnectAttempts = 0;
         #endregion
 
+        #region 全局生命周期字段
+        private CancellationTokenSource? _globalCts;
+        #endregion
+
         public WorkerHostedService(
             IGrpcClientManager grpcClientManager,
             INodeInfoCollector nodeInfoCollector,
             IWorkerSessionManager sessionManager,
             IOptions<GrpcSettings> grpcSettings,
+            IOptions<CrawlerSettings> crawlerSettings,
             IHostApplicationLifetime appLifetime)
         {
             _grpcClientManager = grpcClientManager ?? throw new ArgumentNullException(nameof(grpcClientManager));
             _nodeInfoCollector = nodeInfoCollector ?? throw new ArgumentNullException(nameof(nodeInfoCollector));
             _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
             _grpcSettings = grpcSettings.Value ?? throw new ArgumentNullException(nameof(grpcSettings));
+            _crawlerSettings = crawlerSettings.Value ?? throw new ArgumentNullException(nameof(crawlerSettings));
             _appLifetime = appLifetime ?? throw new ArgumentNullException(nameof(appLifetime));
 
             _nodeRegistered += OnNodeRegistered_StartStreamingAsync;
@@ -101,6 +108,9 @@ namespace CrawlerWorker.Services
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            // 绑定全局停止令牌：所有后台任务统一绑定
+            _globalCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
             LogHelper.Info($"Worker节点启动，进程ID: {Process.GetCurrentProcess().Id}");
 
             try
@@ -421,7 +431,7 @@ namespace CrawlerWorker.Services
         }
 
         /// <summary>
-        /// 修复竞态窗口，原子化校验+写入全流程
+        /// 原子化校验+写入全流程
         /// </summary>
         public async Task<bool> SendMessageAsync(FromWorker message, CancellationToken cancellationToken = default)
         {
@@ -560,39 +570,65 @@ namespace CrawlerWorker.Services
         }
 
         /// <summary>
-        /// 处理新任务：入队 + 上报进度（独立异步操作）
+        /// 处理新任务：入队 + 进度上报 + DEBUG模拟（开关控制）
         /// </summary>
         public async Task ProcessNewTaskAsync(CrawlerCore.Entities.CrawlerTask task)
         {
-            // 1. 入队
             _localTaskQueue.Enqueue(task);
             _sessionManager.IncrementActiveTasks();
 
-            // 2. 构造进度上报消息
-            var progress = new TaskProgress
+            // 统一进度上报方法（复用SendMessageAsync日志）
+            async Task SendProgressAsync(TaskProgress progress)
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var msg = new FromWorker { TaskProgress = progress };
+                await SendMessageAsync(msg, cts.Token).ConfigureAwait(false);
+            }
+
+            // 初始进度上报
+            var initProgress = new TaskProgress
             {
                 TaskId = task.TaskId,
                 CrawledPages = 0,
                 TotalPages = task.MaxPages,
                 CurrentStatus = CrawlerCore.Protos.TaskStatus.Running
             };
-            var message = new FromWorker { TaskProgress = progress };
+            await SendProgressAsync(initProgress).ConfigureAwait(false);
 
-            // 3. 异步发送（使用独立超时取消，避免受上层取消令牌影响）
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try
+//#if DEBUG
+            // 开关控制 + 空值保护 + 绑定三重取消令牌（模拟自身+流关闭+Worker全局停止）
+            if (_crawlerSettings.EnableProgressSimulation && _globalCts != null)
             {
-                await SendMessageAsync(message, timeoutCts.Token).ConfigureAwait(false);
-                LogHelper.Debug($"已向Master上报任务进度: TaskId={task.TaskId}");
+                // 【核心修复】移除 using，避免方法结束时提前释放 CTS
+                var simulateCts = new CancellationTokenSource();
+                var linkedCts = _streamCts == null
+                    ? CancellationTokenSource.CreateLinkedTokenSource(simulateCts.Token, _globalCts.Token)
+                    : CancellationTokenSource.CreateLinkedTokenSource(simulateCts.Token, _streamCts.Token, _globalCts.Token);
+
+                // 后台异步模拟，全异常捕获 + 手动释放CTS
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await TaskProgressSimulator.StartSimulationAsync(
+                            task.TaskId,
+                            task.MaxPages,
+                            SendProgressAsync,
+                            linkedCts.Token).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogHelper.Error(ex, $"模拟后台任务崩溃 TaskId={task.TaskId}");
+                    }
+                    finally
+                    {
+                        // 【核心修复】在后台任务结束时手动释放 CTS，避免资源泄漏
+                        linkedCts?.Dispose();
+                        simulateCts?.Dispose();
+                    }
+                }, linkedCts.Token);
             }
-            catch (OperationCanceledException)
-            {
-                LogHelper.Warn($"上报任务进度超时: TaskId={task.TaskId}");
-            }
-            catch (Exception ex)
-            {
-                LogHelper.Error(ex, $"上报任务进度失败: TaskId={task.TaskId}");
-            }
+//#endif
         }
 
         /// <summary>
@@ -775,6 +811,10 @@ namespace CrawlerWorker.Services
 
             CleanupStreamResourcesAsync().Wait();
             _grpcClientManager.Dispose();
+
+            // 释放全局停止令牌
+            _globalCts?.Dispose();
+            _globalCts = null;
 
             _disposed = true;
             GC.SuppressFinalize(this);

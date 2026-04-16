@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 namespace CrawlerMaster.WPF.Services.Hubs
 {
     /// <summary>
-    /// 爬虫实时通信Hub（强类型版本，兼容原有逻辑）
+    /// 爬虫实时通信Hub
     /// </summary>
     public class CrawlerHub : Hub<ICrawlerHubClient>
     {

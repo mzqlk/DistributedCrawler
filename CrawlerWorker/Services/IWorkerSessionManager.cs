@@ -3,7 +3,7 @@
 namespace CrawlerWorker.Services;
 
 /// <summary>
-/// Worker本地会话管理器，线程安全
+/// Worker本地会话管理器
 /// </summary>
 public interface IWorkerSessionManager
 {

@@ -198,7 +198,6 @@ namespace CrawlerWorker.Communication
 
             _channel = GrpcChannel.ForAddress(_grpcSettings.MasterEndpoint, channelOptions);
 
-            // 关键：使用拦截器包装通道
             var callInvoker = _channel.Intercept(_authInterceptor);
             _client = new CrawlerCoordinator.CrawlerCoordinatorClient(callInvoker);
 
