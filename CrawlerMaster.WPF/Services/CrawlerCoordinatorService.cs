@@ -402,7 +402,7 @@ namespace CrawlerMaster.WPF.Services
             }
         }
 
-        #region 消息处理方法（全异步await+异常隔离）
+        #region 消息处理方法
         private async Task HandleHeartbeatMessage(string nodeId, Heartbeat hb)
         {
             _logger.LogInformation(
@@ -480,19 +480,16 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 【修复】任务进度处理，枚举安全转换+Scope正确释放+事件安全发布
+        /// 任务进度处理
         /// </summary>
         private async Task HandleTaskProgressMessage(string nodeId, TaskProgress progress)
         {
-            _logger.LogInformation(
-                $"收到节点 {nodeId} 任务进度: TaskId={progress.TaskId}, 已爬取={progress.CrawledPages}/{progress.TotalPages}, 状态={progress.CurrentStatus}");
+            _logger.LogInformation($"收到节点 {nodeId} 任务进度: TaskId={progress.TaskId}, 已爬取={progress.CrawledPages}/{progress.TotalPages}, 状态={progress.CurrentStatus}");
 
-            // 非阻塞事件发布，不占用读循环线程
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    // 【修复】枚举数值安全转换+范围校验，极端值兜底
                     var statusIntValue = (int)progress.CurrentStatus;
                     if (!Enum.IsDefined(typeof(TaskStatus), statusIntValue))
                     {
@@ -501,14 +498,19 @@ namespace CrawlerMaster.WPF.Services
                     }
                     var taskStatus = (TaskStatus)statusIntValue;
 
-                    // 【修复】using包裹Scope，确保Scoped服务正确释放
                     string taskName = string.Empty;
-                    using var scope = _serviceProvider.CreateScope();
-                    var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
-                    var task = await taskDataService.GetTaskByIdAsync(progress.TaskId);
-                    if (task != null)
+
+                    using (var scope = _serviceProvider.CreateScope())
                     {
-                        taskName = task.TaskName;
+                        var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+
+                        await taskDataService.UpdateTaskStatusAsync(progress.TaskId, taskStatus);
+
+                        var task = await taskDataService.GetTaskByIdAsync(progress.TaskId);
+                        if (task != null)
+                        {
+                            taskName = task.TaskName;
+                        }
                     }
 
                     var eventArgs = new TaskProgressUpdatedEventArgs(
@@ -527,7 +529,6 @@ namespace CrawlerMaster.WPF.Services
                 }
             }, CancellationToken.None);
 
-            // 原有事件回调逻辑
             var progressHandler = Volatile.Read(ref _taskProgressReceived);
             if (progressHandler != null)
             {

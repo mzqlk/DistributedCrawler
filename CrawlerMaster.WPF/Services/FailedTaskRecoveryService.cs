@@ -13,7 +13,6 @@ namespace CrawlerMaster.WPF.Services
 {
     /// <summary>
     /// 故障任务恢复服务：监听节点离线事件，自动提取故障任务、重置状态、重入调度队列
-    /// 符合.NET/WPF最佳实践，线程安全，无生命周期问题，全链路异常防护
     /// </summary>
     public class FailedTaskRecoveryService : IDisposable
     {
@@ -22,9 +21,9 @@ namespace CrawlerMaster.WPF.Services
         private readonly IEventAggregator _eventAggregator;
         private readonly ITaskSchedulerService _taskSchedulerService;
 
-        // 需求要求：30秒内重复事件去重字典
+        // 30秒内重复事件去重字典
         private readonly ConcurrentDictionary<string, DateTime> _processedNodeOfflines;
-        // 需求要求：故障任务ID内存队列
+        // 故障任务ID内存队列
         private readonly ConcurrentQueue<string> _failedTaskQueue;
         // 并发防重锁：避免高并发下同一节点同时处理
         private readonly ConcurrentDictionary<string, byte> _processingNodes;
@@ -33,7 +32,7 @@ namespace CrawlerMaster.WPF.Services
         // 释放锁：避免多线程下重复释放
         private readonly object _disposeLock = new object();
 
-        // 常量配置（严格匹配需求）
+        // 常量配置
         private readonly TimeSpan _duplicateProcessingWindow = TimeSpan.FromSeconds(30);
         private readonly TimeSpan _cleanupInterval = TimeSpan.FromMinutes(5);
 
@@ -43,7 +42,7 @@ namespace CrawlerMaster.WPF.Services
         private volatile bool _disposed = false;
         #endregion
 
-        #region 构造函数（严格匹配需求注入要求）
+        #region 构造函数
         public FailedTaskRecoveryService(
             IServiceProvider serviceProvider,
             IEventAggregator eventAggregator,
@@ -58,7 +57,7 @@ namespace CrawlerMaster.WPF.Services
             _failedTaskQueue = new ConcurrentQueue<string>();
             _processingNodes = new ConcurrentDictionary<string, byte>();
 
-            // 严格匹配需求：构造函数中订阅NodeStatusChangedEventArgs事件
+            // 构造函数中订阅NodeStatusChangedEventArgs事件
             _eventSubscriptionId = _eventAggregator.Subscribe<NodeStatusChangedEventArgs>(OnNodeStatusChanged);
 
             // 启动过期条目清理定时器，避免内存泄漏
@@ -72,26 +71,26 @@ namespace CrawlerMaster.WPF.Services
         }
         #endregion
 
-        #region 公开属性（需求要求：故障队列对外只读访问）
+        #region 公开属性
         /// <summary>
-        /// 需求要求：故障任务ID内存队列，对外只读线程安全访问
+        /// 故障任务ID内存队列，对外只读线程安全访问
         /// </summary>
         public IReadOnlyCollection<string> FailedTaskQueue => _failedTaskQueue.ToList();
         #endregion
 
-        #region 核心事件处理逻辑（100%严格匹配需求步骤，零逻辑漏洞）
+        #region 核心事件处理逻辑
         /// <summary>
-        /// 节点状态变更事件处理程序（严格遵循需求要求的处理流程）
+        /// 节点状态变更事件处理程序
         /// </summary>
         private async void OnNodeStatusChanged(object? sender, NodeStatusChangedEventArgs args)
         {
-            // 前置校验1：已释放则直接返回，避免资源释放后执行逻辑
+            // 已释放则直接返回，避免资源释放后执行逻辑
             if (_disposed) return;
 
-            // 严格匹配需求：仅处理NewStatus == NodeStatus.Offline的情况
+            // 仅处理NewStatus == NodeStatus.Offline的情况
             if (args.NewStatus != NodeStatus.Offline) return;
 
-            // 前置校验2：空引用全防护，避免极端场景下的空引用异常
+            // 空引用全防护，避免极端场景下的空引用异常
             var nodeId = args.NodeId;
             if (string.IsNullOrWhiteSpace(nodeId) || args.NodeInfo == null)
             {
@@ -101,8 +100,8 @@ namespace CrawlerMaster.WPF.Services
 
             var now = DateTime.UtcNow;
 
-            // 严格匹配需求：30秒内重复事件去重，高并发下双重防重
-            // 防重第一步：拦截正在处理中的节点，避免并发重复处理
+            // 30秒内重复事件去重，高并发下双重防重
+            // 拦截正在处理中的节点，避免并发重复处理
             if (!_processingNodes.TryAdd(nodeId, 0))
             {
                 LogHelper.Debug("节点 {NodeId} 故障任务正在处理中，跳过重复触发", nodeId);
@@ -111,7 +110,7 @@ namespace CrawlerMaster.WPF.Services
 
             try
             {
-                // 防重第二步：拦截30秒内已处理完成的节点
+                // 拦截30秒内已处理完成的节点
                 if (_processedNodeOfflines.TryGetValue(nodeId, out var lastProcessedTime)
                     && now - lastProcessedTime < _duplicateProcessingWindow)
                 {
@@ -119,7 +118,7 @@ namespace CrawlerMaster.WPF.Services
                     return;
                 }
 
-                // 严格匹配需求：记录结构化日志（节点ID、机器名、IP）
+                // 记录结构化日志（节点ID、机器名、IP）
                 LogHelper.Info(
                     "检测到节点离线，启动故障任务恢复流程 | NodeId:{NodeId} 机器名:{MachineName} IP:{IpAddress}",
                     nodeId, args.NodeInfo.MachineName, args.NodeInfo.IpAddress);
@@ -128,7 +127,7 @@ namespace CrawlerMaster.WPF.Services
                 using var scope = _serviceProvider.CreateScope();
                 var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
 
-                // 严格匹配需求：调用ITaskDataService查询该离线节点上所有Status=Running的任务，确保数据最新
+                // 调用ITaskDataService查询该离线节点上所有Status=Running的任务，确保数据最新
                 var runningTasks = await taskDataService.GetRunningTasksByNodeIdAsync(nodeId).ConfigureAwait(false);
                 if (runningTasks == null || runningTasks.Count == 0)
                 {
@@ -140,7 +139,7 @@ namespace CrawlerMaster.WPF.Services
 
                 var taskIds = runningTasks.Select(t => t.TaskId).ToList();
 
-                // 严格匹配需求：开启数据库事务，更新任务为Pending，清空AssignedNode字段
+                // 开启数据库事务，更新任务为Pending，清空AssignedNode字段
                 var resetTasks = await taskDataService.BatchResetFailedTasksAsync(taskIds).ConfigureAwait(false);
                 if (resetTasks.Count == 0)
                 {
@@ -148,12 +147,12 @@ namespace CrawlerMaster.WPF.Services
                     return;
                 }
 
-                // 处理成功后更新去重时间戳（严格匹配需求：30秒内重复事件跳过）
+                // 处理成功后更新去重时间戳（30秒内重复事件跳过）
                 _processedNodeOfflines[nodeId] = now;
-                // 严格匹配需求：记录结构化日志（节点ID、受影响任务数）
+                // 记录结构化日志（节点ID、受影响任务数）
                 LogHelper.Info("节点 {NodeId} 成功重置 {Count} 个故障任务", nodeId, resetTasks.Count);
 
-                // 严格匹配需求：将受影响的任务ID加入内存中的故障队列ConcurrentQueue<string>
+                // 将受影响的任务ID加入内存中的故障队列ConcurrentQueue<string>
                 var resetTaskIds = resetTasks.Select(t => t.TaskId).ToList();
                 foreach (var taskId in resetTaskIds)
                 {
@@ -161,11 +160,11 @@ namespace CrawlerMaster.WPF.Services
                 }
                 LogHelper.Info("故障任务已加入内存队列 | 任务数量:{Count}", resetTaskIds.Count);
 
-                // 严格匹配需求：成功更新数据库后，立即将任务按原优先级重新入队调度
+                // 成功更新数据库后，立即将任务按原优先级重新入队调度
                 int requeuedCount = 0;
                 foreach (var task in resetTasks)
                 {
-                    // 严格匹配需求：使用任务自带的Priority优先级入队
+                    // 使用任务自带的Priority优先级入队
                     var enqueueResult = await _taskSchedulerService.ScheduleTaskAsync(task).ConfigureAwait(false);
                     if (enqueueResult)
                     {
