@@ -3,7 +3,7 @@
 namespace CrawlerCore.Entities
 {
     /// <summary>
-    /// 爬虫插件执行上下文（传递插件所需的基础参数）
+    /// 爬虫插件执行上下文
     /// </summary>
     public class PluginContext
     {

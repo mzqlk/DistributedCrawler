@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 namespace CrawlerCore.Interfaces
 {
     /// <summary>
-    /// 爬虫插件核心接口（所有自定义插件必须实现此接口）
+    /// 爬虫插件核心接口
     /// </summary>
     public interface ICrawlerPlugin
     {

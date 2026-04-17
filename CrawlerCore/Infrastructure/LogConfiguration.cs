@@ -5,6 +5,9 @@ using Serilog.Events;
 
 namespace CrawlerCore.Infrastructure
 {
+    /// <summary>
+    /// 日志配置类，负责初始化和管理全局 Serilog 日志系统
+    /// </summary>
     public static class LogConfiguration
     {
         /// <summary>

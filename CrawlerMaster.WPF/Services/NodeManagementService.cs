@@ -11,6 +11,9 @@ using System.Threading.Tasks;
 
 namespace CrawlerMaster.WPF.Services
 {
+    /// <summary>
+    /// 节点管理服务，负责节点的注册、心跳更新和状态管理
+    /// </summary>
     public class NodeManagementService : INodeManagementService
     {
         private readonly CrawlerDbContext _dbContext;

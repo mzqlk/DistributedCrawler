@@ -3,6 +3,9 @@ using Microsoft.Extensions.Logging;
 
 namespace CrawlerWorker.Services;
 
+/// <summary>
+/// worker会话管理器，负责保存和管理worker的会话信息，包括SessionId、系统配置和注册状态等。
+/// </summary>
 public class WorkerSessionManager : IWorkerSessionManager
 {
     private readonly ILogger<WorkerSessionManager> _logger;

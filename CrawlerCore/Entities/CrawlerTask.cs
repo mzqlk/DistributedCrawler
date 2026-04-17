@@ -5,7 +5,7 @@ using System.Collections.Generic;
 namespace CrawlerCore.Entities
 {
     /// <summary>
-    /// 爬虫任务实体（包含任务配置、运行状态）
+    /// 爬虫任务实体
     /// </summary>
     public class CrawlerTask
     {

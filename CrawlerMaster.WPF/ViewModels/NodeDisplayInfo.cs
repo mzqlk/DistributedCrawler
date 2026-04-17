@@ -4,6 +4,9 @@ using System.Runtime.CompilerServices;
 
 namespace CrawlerMaster.WPF.ViewModels
 {
+    /// <summary>
+    /// 节点显示信息类，用于在UI中展示节点的相关信息和状态。
+    /// </summary>
     public class NodeDisplayInfo : INotifyPropertyChanged
     {
         private string _nodeId = string.Empty;

@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 namespace CrawlerMaster.WPF.Services.Hubs
 {
     /// <summary>
-    /// SignalR客户端强类型契约，编译时校验方法名，彻底避免拼写错误
+    /// 爬虫Hub客户端接口，用于接收服务器推送的消息
     /// </summary>
     public interface ICrawlerHubClient
     {

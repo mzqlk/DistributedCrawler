@@ -11,7 +11,6 @@ namespace CrawlerMaster.WPF.Services
 {
     /// <summary>
     /// 节点会话管理类，线程安全，带过期会话自动清理
-    /// 严格对齐原项目流程，修复内存泄漏、重注册失败问题
     /// </summary>
     public class SessionManager : BackgroundService
     {

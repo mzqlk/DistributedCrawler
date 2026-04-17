@@ -17,7 +17,7 @@ using TaskStatus = CrawlerCore.Entities.TaskStatus;
 namespace CrawlerMaster.WPF.Services
 {
     /// <summary>
-    /// 实时数据同步中枢服务（最终零错误版本）
+    /// 实时数据同步中枢服务
     /// </summary>
     public class RealtimeDataSyncService : BackgroundService
     {

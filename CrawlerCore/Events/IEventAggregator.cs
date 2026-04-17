@@ -3,7 +3,7 @@
 namespace CrawlerCore.Events
 {
     /// <summary>
-    /// 全局事件聚合器接口（Singleton，跨服务/跨Scope，保证事件有序）
+    /// 全局事件聚合器接口
     /// </summary>
     public interface IEventAggregator
     {

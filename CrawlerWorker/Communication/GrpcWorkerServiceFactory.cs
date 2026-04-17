@@ -11,14 +11,12 @@ using System.Net;
 namespace CrawlerWorker.Communication;
 
 /// <summary>
-/// Worker gRPC服务端底座工厂，严格遵循原项目要求：
-/// 仅搭建框架、定义服务结构，不自动启动监听，仅提供后续阶段启动服务的扩展入口
-/// 完全不涉及业务逻辑，严守工作日13的阶段边界
+/// Worker gRPC服务端底座工厂
 /// </summary>
 public interface IGrpcWorkerServiceFactory
 {
     /// <summary>
-    /// 创建Worker gRPC服务端实例（仅创建，不启动监听）
+    /// 创建Worker gRPC服务端实例
     /// </summary>
     Server CreateWorkerServer();
 }
@@ -31,7 +29,7 @@ public class GrpcWorkerServiceFactory : IGrpcWorkerServiceFactory
     private readonly IServiceScopeFactory _scopeFactory;
 
     /// <summary>
-    /// 【关键修复】注入IServiceScopeFactory，解决Scoped服务生命周期问题
+    /// 注入IServiceScopeFactory，解决Scoped服务生命周期问题
     /// </summary>
     public GrpcWorkerServiceFactory(
         IOptions<GrpcSettings> grpcSettings,
@@ -47,8 +45,6 @@ public class GrpcWorkerServiceFactory : IGrpcWorkerServiceFactory
 
     /// <summary>
     /// 创建Worker gRPC服务端实例，与Master端配置100%对齐
-    /// 仅创建实例，不启动监听，完全符合「仅搭建底座框架」的阶段要求
-    /// 【关键修复】通过Scoped作用域获取WorkerControlService，严格遵循DI生命周期规范
     /// </summary>
     public Server CreateWorkerServer()
     {

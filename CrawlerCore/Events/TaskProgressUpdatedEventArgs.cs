@@ -5,7 +5,7 @@ using TaskStatus = CrawlerCore.Entities.TaskStatus;
 namespace CrawlerCore.Events
 {
     /// <summary>
-    /// 任务进度更新事件参数（与现有NodeStatusChangedEventArgs规范完全对齐）
+    /// 任务进度更新事件参数
     /// </summary>
     public class TaskProgressUpdatedEventArgs : EventArgs
     {

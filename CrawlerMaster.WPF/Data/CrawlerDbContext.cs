@@ -9,6 +9,9 @@ using System.Text.Json;
 
 namespace CrawlerMaster.WPF.Data
 {
+    /// <summary>
+    /// 数据库上下文类，负责管理爬虫任务、爬取结果和节点信息的存储和访问。
+    /// </summary>
     public class CrawlerDbContext : DbContext
     {
         private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };

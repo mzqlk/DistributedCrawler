@@ -8,7 +8,6 @@ namespace CrawlerWorker.Communication;
 
 /// <summary>
 /// Worker服务端全局认证拦截器，仅允许Master端合法请求访问
-/// 完全对齐原项目安全规范，预留底座框架，不实现业务逻辑
 /// </summary>
 public class GrpcAuthenticationInterceptor : Interceptor
 {

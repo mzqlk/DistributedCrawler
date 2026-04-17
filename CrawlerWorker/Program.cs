@@ -1,10 +1,11 @@
-﻿using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Hosting;
-using Serilog;
-using CrawlerCore.Infrastructure;
+﻿using CrawlerCore.Infrastructure;
 using CrawlerWorker.Communication;
 using CrawlerWorker.Services;
+using CrawlerWorker.Services.Engine;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Serilog;
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http3UnencryptedSupport", true);
 
@@ -71,6 +72,11 @@ try
             services.AddSingleton<IWorkerSessionManager, WorkerSessionManager>();
             // Worker核心生命周期托管，由.NET主机统一管理
             services.AddHostedService<WorkerHostedService>();
+
+            // 5. 爬虫引擎注册
+            services.AddHttpClient("CrawlerEngineClient");
+            services.AddSingleton<IPluginManager, PluginManager>();
+            services.AddSingleton<CrawlerEngine>();
         })
         .Build();
 

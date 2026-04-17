@@ -2,6 +2,7 @@
 using CrawlerCore.Infrastructure.Constants;
 using CrawlerCore.Protos;
 using CrawlerWorker.Communication;
+using CrawlerWorker.Services.Engine;
 using CrawlerWorker.Services.Simulation;
 using Grpc.Core;
 using Microsoft.Extensions.Hosting;
@@ -31,6 +32,7 @@ namespace CrawlerWorker.Services
         private readonly object _eventLock = new();
         private bool _disposed = false;
         private readonly ConcurrentQueue<CrawlerCore.Entities.CrawlerTask> _localTaskQueue = new();
+
 
         #region 事件定义
         private Func<NodeRegistration, RegistrationResponse, CancellationToken, Task>? _nodeRegistered;
@@ -599,7 +601,6 @@ namespace CrawlerWorker.Services
             // 开关控制 + 空值保护 + 绑定三重取消令牌（模拟自身+流关闭+Worker全局停止）
             if (_crawlerSettings.EnableProgressSimulation && _globalCts != null)
             {
-                // 【核心修复】移除 using，避免方法结束时提前释放 CTS
                 var simulateCts = new CancellationTokenSource();
                 var linkedCts = _streamCts == null
                     ? CancellationTokenSource.CreateLinkedTokenSource(simulateCts.Token, _globalCts.Token)
@@ -622,7 +623,6 @@ namespace CrawlerWorker.Services
                     }
                     finally
                     {
-                        // 【核心修复】在后台任务结束时手动释放 CTS，避免资源泄漏
                         linkedCts?.Dispose();
                         simulateCts?.Dispose();
                     }

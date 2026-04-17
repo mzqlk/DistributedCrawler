@@ -19,8 +19,7 @@ using System.Runtime.CompilerServices;
 namespace CrawlerMaster.WPF.ViewModels
 {
     /// <summary>
-    /// 主窗口ViewModel（最终零错误版本）
-    /// 实现IAsyncDisposable，双渠道更新UI（SignalR+事件总线），全异步资源释放
+    /// 主窗口ViewModel
     /// </summary>
     public class MainWindowViewModel : IAsyncDisposable, INotifyPropertyChanged
     {

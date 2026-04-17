@@ -4,7 +4,7 @@ using System.Collections.Concurrent;
 namespace CrawlerCore.Events
 {
     /// <summary>
-    /// 全局事件聚合器实现（线程安全，Singleton，保证事件有序，优化Unsubscribe）
+    /// 全局事件聚合器实现
     /// </summary>
     public class EventAggregator : IEventAggregator
     {

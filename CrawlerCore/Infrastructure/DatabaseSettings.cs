@@ -1,7 +1,7 @@
 ﻿namespace CrawlerCore.Infrastructure
 {
     /// <summary>
-    /// 数据库配置项（100%对齐原项目appsettings.json规范）
+    /// 数据库配置项
     /// </summary>
     public class DatabaseSettings
     {

@@ -5,9 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace CrawlerWorker.Services;
 
 /// <summary>
-/// Worker控制服务底座实现，严格遵循原项目要求：
-/// 仅搭建框架、定义接口结构，不实现任何业务逻辑，不返回有效响应
-/// 业务逻辑100%移交后续子阶段实现
+/// Worker控制服务底座实现
 /// </summary>
 public class WorkerControlService : WorkerControl.WorkerControlBase
 {

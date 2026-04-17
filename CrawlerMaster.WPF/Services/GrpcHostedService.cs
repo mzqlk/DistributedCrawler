@@ -17,6 +17,9 @@ using System.Threading.Tasks;
 
 namespace CrawlerMaster.WPF.Services
 {
+    /// <summary>
+    /// gRPC托管服务类，负责启动和管理gRPC服务器
+    /// </summary>
     public class GrpcHostedService : IHostedService, IDisposable
     {
         private readonly ILogger<GrpcHostedService> _logger;

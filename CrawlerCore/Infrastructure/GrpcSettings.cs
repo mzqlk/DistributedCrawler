@@ -1,7 +1,7 @@
 ﻿namespace CrawlerCore.Infrastructure
 {
     /// <summary>
-    /// gRPC配置项（100%对齐原项目appsettings.json规范）
+    /// gRPC配置项
     /// </summary>
     public class GrpcSettings
     {

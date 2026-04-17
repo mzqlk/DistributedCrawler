@@ -17,6 +17,9 @@ using System.Threading.Tasks;
 
 namespace CrawlerWorker.Communication
 {
+    /// <summary>
+    /// gRPC客户端管理类，负责创建和管理与Master端的gRPC通道和客户端实例
+    /// </summary>
     public sealed class GrpcClientManager : IGrpcClientManager, IDisposable
     {
         private readonly GrpcSettings _grpcSettings;

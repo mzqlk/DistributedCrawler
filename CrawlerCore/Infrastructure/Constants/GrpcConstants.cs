@@ -1,5 +1,8 @@
 ﻿namespace CrawlerCore.Infrastructure.Constants
 {
+    /// <summary>
+    /// gRPC相关常量
+    /// </summary>
     public static class GrpcConstants
     {
         public const int DefaultMaxMessageSizeMb = 64;
