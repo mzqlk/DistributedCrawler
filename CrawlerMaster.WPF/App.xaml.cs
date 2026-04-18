@@ -8,6 +8,7 @@ using CrawlerMaster.WPF.Infrastructure;
 using CrawlerMaster.WPF.Services;
 using CrawlerMaster.WPF.Services.Hubs;
 using CrawlerMaster.WPF.ViewModels;
+using LiveChartsCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Data.Sqlite;
@@ -156,9 +157,15 @@ public partial class App : Application
 
                     // ==================== WPF UI服务 ====================
                     services.AddSingleton<MainWindowViewModel>();
+                    services.AddSingleton<NodeMonitorViewModel>();
+                    services.AddSingleton<TaskManagementViewModel>();
+                    services.AddSingleton<DataViewerViewModel>();
                     services.AddTransient<MainWindow>(sp => new MainWindow(sp.GetRequiredService<MainWindowViewModel>()));
                 })
                 .Build();
+
+            // 配置 LiveCharts（禁用动画，避免 UI 卡顿）
+            LiveCharts.Configure(config => config.WithAnimationsSpeed(TimeSpan.Zero));
 
             // 4. 启动主机（端口占用异常友好捕获）
             try

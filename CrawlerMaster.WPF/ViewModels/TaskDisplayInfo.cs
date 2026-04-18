@@ -59,7 +59,7 @@ namespace CrawlerMaster.WPF.ViewModels
         }
 
         /// <summary>
-        /// 进度百分比（与TaskProgressMessage计算逻辑完全一致）
+        /// 进度百分比
         /// </summary>
         public double ProgressPercent => TotalPages == 0 ? 0 : Math.Round((double)CompletedPages / TotalPages * 100, 2);
 
@@ -69,7 +69,7 @@ namespace CrawlerMaster.WPF.ViewModels
             set => SetProperty(ref _assignedNode, value);
         }
 
-        // INotifyPropertyChanged 实现（与NodeDisplayInfo完全统一）
+        // INotifyPropertyChanged 实现
         public event PropertyChangedEventHandler? PropertyChanged;
 
         protected virtual void OnPropertyChanged([CallerMemberName] string? propertyName = null)

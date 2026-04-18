@@ -19,7 +19,7 @@ using TaskStatus = CrawlerCore.Entities.TaskStatus;
 namespace CrawlerMaster.WPF.Services
 {
     /// <summary>
-    /// gRPC协调服务实现（Scoped生命周期，对齐ASP.NET Core gRPC规范）
+    /// gRPC协调服务实现
     /// </summary>
     public class CrawlerCoordinatorService : CrawlerCoordinator.CrawlerCoordinatorBase, IDisposable, ICrawlerCoordinatorService
     {
@@ -33,7 +33,7 @@ namespace CrawlerMaster.WPF.Services
         private readonly object _eventLock = new();
         private bool _disposed = false;
 
-        #region 事件定义（原有逻辑完全保留）
+        #region 事件定义
         private Action<NodeRegistration>? _nodeRegistered;
         public event Action<NodeRegistration>? NodeRegistered
         {
@@ -84,7 +84,6 @@ namespace CrawlerMaster.WPF.Services
         }
         #endregion
 
-        // 【修复】构造函数依赖完整匹配DI注册，无注入失败
         public CrawlerCoordinatorService(
             SessionManager sessionManager,
             INodeManagementService nodeManagementService,
@@ -102,7 +101,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 【修复】补充await，确保数据库操作完成后再返回响应，无火并遗忘
+        /// 注册节点，生成会话，持久化节点信息，发布事件，返回系统配置
         /// </summary>
         public override async Task<RegistrationResponse> RegisterNode(NodeRegistration request, ServerCallContext context)
         {
@@ -131,7 +130,6 @@ namespace CrawlerMaster.WPF.Services
 
             try
             {
-                // 【核心修复】通过IServiceProvider创建Scope获取Scoped服务
                 using var scope = _serviceProvider.CreateScope();
                 var nodeManagementService = scope.ServiceProvider.GetRequiredService<INodeManagementService>();
 
@@ -146,7 +144,6 @@ namespace CrawlerMaster.WPF.Services
                     Status = NodeStatus.Pending
                 };
 
-                // 【修复】await数据库操作
                 await nodeManagementService.RegisterNodeAsync(nodeInfo);
                 _logger.LogInformation($"节点 {request.NodeId} 已持久化到数据库");
 
@@ -157,7 +154,7 @@ namespace CrawlerMaster.WPF.Services
                     NodeStatus.Online,
                     new NodeInfo { LastHeartbeat = DateTime.UtcNow }));
 
-                // 触发内部的 NodeRegistered 事件，确保订阅者能收到通知（线程安全，隔离异常）
+                // 触发内部的 NodeRegistered 事件，确保订阅者能收到通知
                 var nodeRegisteredHandler = Volatile.Read(ref _nodeRegistered);
                 if (nodeRegisteredHandler != null)
                 {
@@ -205,7 +202,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 【修复】读循环全await，保证消息有序，无乱序/流中断
+        /// 开始双向流，验证会话，存储流上下文，处理消息，发布事件，清理资源
         /// </summary>
         public override async Task StartStreaming(
     IAsyncStreamReader<FromWorker> requestStream,
@@ -243,7 +240,6 @@ namespace CrawlerMaster.WPF.Services
                 sendChannel,
                 streamCts);
 
-            // 【核心修复】线程安全存储流上下文
             if (!_nodeStreamContexts.TryAdd(nodeId, streamContext))
             {
                 _logger.LogWarning($"双向流建立失败：节点 {nodeId} 已存在活跃流");
@@ -262,7 +258,6 @@ namespace CrawlerMaster.WPF.Services
                 NodeStatus.Online,
                 new NodeInfo{ LastHeartbeat = DateTime.UtcNow }));
 
-            // 【核心修复】流关闭时，通过Scope获取服务标记节点离线
             context.CancellationToken.Register(async () =>
             {
                 try
@@ -330,7 +325,6 @@ namespace CrawlerMaster.WPF.Services
                 _logger.LogWarning(ex, $"关闭节点 {nodeId} 发送通道时发生异常");
             }
 
-            // 【核心修复】通过Scope获取服务标记节点离线
             try
             {
                 using var scope = _serviceProvider.CreateScope();
@@ -371,7 +365,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 【修复】读循环全await，消息有序处理，无火并遗忘
+        ///  开始读循环，持续读取节点消息，更新会话活跃时间，处理不同类型消息，发布事件
         /// </summary>
         private async Task StartReadLoopAsync(
             IAsyncStreamReader<FromWorker> requestStream,
@@ -583,7 +577,7 @@ namespace CrawlerMaster.WPF.Services
         #endregion
 
         /// <summary>
-        /// 写循环（原有逻辑完全保留，仅补充异常隔离）
+        /// 写循环
         /// </summary>
         private async Task StartWriteLoopAsync(
             NodeStreamContext streamContext,
@@ -605,7 +599,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 发送消息到节点（原有逻辑完全保留，补充Channel异常隔离）
+        /// 发送消息到节点
         /// </summary>
         public async Task<bool> SendMessageToNodeAsync(string nodeId, FromMaster message)
         {
@@ -654,7 +648,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 发送任务到节点（原有逻辑完全保留，补充异常隔离）
+        /// 发送任务到节点
         /// </summary>
         public async Task<bool> SendTaskToNodeAsync(string nodeId, CrawlerCore.Entities.CrawlerTask task)
         {
@@ -670,7 +664,6 @@ namespace CrawlerMaster.WPF.Services
                 return false;
             }
 
-            // 【核心修复】线程安全访问流上下文
             if (!_nodeStreamContexts.TryGetValue(nodeId, out var streamContext))
             {
                 _logger.LogWarning($"发送任务失败：节点 {nodeId} 无有效会话或活跃流");
@@ -706,7 +699,6 @@ namespace CrawlerMaster.WPF.Services
                     NewTask = protoTask
                 };
 
-                // 【核心修复】线程安全写入通道
                 await streamContext.SendChannel.Writer.WriteAsync(fromMaster, streamContext.Cts.Token);
                 _logger.LogInformation($"任务已发送到节点 {nodeId}，TaskId: {task.TaskId}");
                 return true;
@@ -728,7 +720,7 @@ namespace CrawlerMaster.WPF.Services
             }
         }
 
-        #region 私有类与Dispose（原有逻辑完全保留）
+        #region 私有类与Dispose
         private class NodeStreamContext
         {
             public string NodeId { get; }
