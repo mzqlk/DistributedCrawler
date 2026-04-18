@@ -5,14 +5,16 @@ using CrawlerCore.Events;
 using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
 using Microsoft.Extensions.Options;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Reflection;
 using TaskStatus = CrawlerCore.Entities.TaskStatus;
 
 namespace CrawlerWorker.Services.Engine;
 
 /// <summary>
-/// Worker爬虫执行引擎（完整实现：深度爬取+链接提取+URL去重+进度追踪）
+/// Worker爬虫执行引擎
 /// </summary>
 public sealed class CrawlerEngine(IHttpClientFactory httpClientFactory,
                                   IPluginManager pluginManager,
@@ -39,7 +41,7 @@ public sealed class CrawlerEngine(IHttpClientFactory httpClientFactory,
 
     #region 核心执行入口（队列式深度爬取）
     /// <summary>
-    /// 执行爬虫任务（核心入口：支持深度爬取+URL去重+并发控制）
+    /// 执行爬虫任务
     /// </summary>
     public async Task<CrawlResult> ExecuteAsync(CrawlerTask task, CancellationToken cancellationToken)
     {
@@ -61,7 +63,6 @@ public sealed class CrawlerEngine(IHttpClientFactory httpClientFactory,
             {
                 LogHelper.Warn($"任务无有效URL: {task.TaskId}", nameof(CrawlerEngine));
                 task.Status = TaskStatus.Completed;
-                // 【修正】确保无有效URL时也触发初始进度事件
                 OnProgressUpdated(task, 0, 0);
                 return result;
             }
@@ -80,7 +81,6 @@ public sealed class CrawlerEngine(IHttpClientFactory httpClientFactory,
                     crawlQueue.Enqueue((url, 1));
             }
 
-            // 【修正】任务开始时触发初始进度事件（0/总页数）
             int estimatedTotalPages = Math.Min(crawlQueue.Count, maxPages);
             OnProgressUpdated(task, 0, estimatedTotalPages);
 
@@ -104,6 +104,13 @@ public sealed class CrawlerEngine(IHttpClientFactory httpClientFactory,
                 var pageResult = await CrawlSinglePageAsync(currentUrl, task, plugin, currentDepth, string.Empty, cancellationToken);
                 result.PageResults.Add(pageResult);
                 crawledCount++;
+
+                // 如果发生重定向，将最终爬取的 URL 也加入全局去重集合，避免后续重复爬取
+                if (!string.IsNullOrEmpty(pageResult.FinalUrl) &&
+                    !string.Equals(pageResult.Url, pageResult.FinalUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    crawledUrlSet.Add(pageResult.FinalUrl);
+                }
 
                 // 实时上报进度
                 int currentTotalPages = Math.Max(crawledCount + crawlQueue.Count, maxPages);
@@ -147,7 +154,7 @@ public sealed class CrawlerEngine(IHttpClientFactory httpClientFactory,
 
     #region 单页爬取核心逻辑（含链接提取）
     /// <summary>
-    /// 单页爬取完整实现（自动提取子链接+插件解析）
+    /// 单页爬取完整实现（支持手动跟随跨协议重定向）
     /// </summary>
     private async Task<PageResult> CrawlSinglePageAsync(
         string url,
@@ -160,67 +167,116 @@ public sealed class CrawlerEngine(IHttpClientFactory httpClientFactory,
         var pageResult = new PageResult { Url = url };
         LogHelper.Debug($"开始爬取页面 | URL: {url} | 深度: {depth}", nameof(CrawlerEngine));
 
+        const int maxRedirects = 10;          // 与配置中的 MaxAutomaticRedirections 保持一致
+        var redirectCount = 0;
+        var currentUrl = url;
+        var visitedRedirectUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { url };
+
+        // 在循环外创建 HttpClient，避免重复创建和请求头丢失
+        var client = _httpClientFactory.CreateClient("CrawlerEngineClient");
+        if (!client.DefaultRequestHeaders.UserAgent.Any())
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(_crawlerSettings.DefaultUserAgent);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
+        client.Timeout = TimeSpan.FromSeconds(_crawlerSettings.RequestTimeoutSeconds);
+
         try
         {
-            // 1. 初始化HTTP客户端
-            var client = _httpClientFactory.CreateClient("CrawlerEngineClient");
-            if (!client.DefaultRequestHeaders.UserAgent.Any())
-                client.DefaultRequestHeaders.UserAgent.ParseAdd(_crawlerSettings.DefaultUserAgent);
-            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
-            client.Timeout = TimeSpan.FromSeconds(_crawlerSettings.RequestTimeoutSeconds);
-
-            // 请求延迟（防封禁）
-            await Task.Delay(_crawlerSettings.DelayBetweenRequestsMs, ct);
-
-            // 2. 发送HTTP请求
-            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            pageResult.StatusCode = (int)response.StatusCode;
-            if (!response.IsSuccessStatusCode)
+            while (redirectCount <= maxRedirects)
             {
-                LogHelper.Warn($"页面请求失败 | URL: {url} | 状态码: {pageResult.StatusCode}", nameof(CrawlerEngine));
-                return pageResult;
+                ct.ThrowIfCancellationRequested();
+
+                // 请求延迟（防封禁）
+                await Task.Delay(_crawlerSettings.DelayBetweenRequestsMs, ct);
+
+                using var response = await client.GetAsync(currentUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+                pageResult.StatusCode = (int)response.StatusCode;
+
+                // 处理 3xx 重定向
+                if ((int)response.StatusCode >= 300 && (int)response.StatusCode < 400)
+                {
+                    var location = response.Headers.Location;
+                    if (location == null)
+                    {
+                        LogHelper.Warn($"重定向响应缺少 Location 头 | URL: {currentUrl}", nameof(CrawlerEngine));
+                        break;
+                    }
+
+                    if (!Uri.TryCreate(new Uri(currentUrl), location, out var redirectUri))
+                    {
+                        LogHelper.Warn($"无法解析重定向 Location: {location} | 基础 URL: {currentUrl}", nameof(CrawlerEngine));
+                        break;
+                    }
+
+                    var redirectUrl = redirectUri.AbsoluteUri;
+                    LogHelper.Debug($"跟随重定向 ({response.StatusCode}) | {currentUrl} -> {redirectUrl}", nameof(CrawlerEngine));
+
+                    // 防止重定向循环
+                    if (!visitedRedirectUrls.Add(redirectUrl))
+                    {
+                        LogHelper.Warn($"检测到重定向循环，停止跟随 | URL: {redirectUrl}", nameof(CrawlerEngine));
+                        break;
+                    }
+
+                    currentUrl = redirectUrl;
+                    redirectCount++;
+                    continue;   // 继续下一次请求
+                }
+
+                // 非重定向状态码，检查是否成功
+                if (!response.IsSuccessStatusCode)
+                {
+                    LogHelper.Warn($"页面请求失败 | URL: {currentUrl} | 状态码: {pageResult.StatusCode}", nameof(CrawlerEngine));
+                    break;
+                }
+
+                // 成功响应：读取内容、提取链接、调用插件
+                string html = await response.Content.ReadAsStringAsync(ct);
+                LogHelper.Debug($"页面加载成功 | URL: {currentUrl} | 内容长度: {html.Length}", nameof(CrawlerEngine));
+
+                pageResult.FinalUrl = currentUrl;          // 记录重定向后的最终 URL
+                pageResult.Links = await ExtractLinksAsync(html, currentUrl);
+
+                var pluginContext = new PluginContext { Html = html, Url = currentUrl };
+                var pluginResult = await plugin.ExecuteAsync(pluginContext);
+
+                if (pluginResult is { Success: true })
+                {
+                    pageResult.ParsedData = pluginResult.Data ?? [];
+                    LogHelper.Debug($"插件解析成功 | URL: {currentUrl} | 解析字段数: {pageResult.ParsedData.Count}", nameof(CrawlerEngine));
+                }
+                else
+                {
+                    string errorMsg = pluginResult?.ErrorMessage ?? "插件执行返回未知错误";
+                    LogHelper.Error($"插件解析失败 | URL: {currentUrl} | 错误: {errorMsg}", nameof(CrawlerEngine));
+                }
+
+                break;   // 成功处理后退出循环
             }
 
-            string html = await response.Content.ReadAsStringAsync(ct);
-            LogHelper.Debug($"页面加载成功 | URL: {url} | 内容长度: {html.Length}", nameof(CrawlerEngine));
-
-            // 3. 引擎内置链接提取（通用能力，不依赖插件）
-            pageResult.Links = await ExtractLinksAsync(html, url);
-
-            // 4. 插件解析页面内容
-            var pluginContext = new PluginContext { Html = html, Url = url };
-            var pluginResult = await plugin.ExecuteAsync(pluginContext);
-
-            // 5. 封装插件结果
-            if (pluginResult is { Success: true })
+            if (redirectCount > maxRedirects)
             {
-                pageResult.ParsedData = pluginResult.Data ?? [];
-                LogHelper.Debug($"插件解析成功 | URL: {url} | 解析字段数: {pageResult.ParsedData.Count}", nameof(CrawlerEngine));
-            }
-            else
-            {
-                string errorMsg = pluginResult?.ErrorMessage ?? "插件执行返回未知错误";
-                LogHelper.Error($"插件解析失败 | URL: {url} | 错误: {errorMsg}", nameof(CrawlerEngine));
+                LogHelper.Warn($"超出最大重定向次数 {maxRedirects} | 最终 URL: {currentUrl}", nameof(CrawlerEngine));
+                pageResult.StatusCode = 310;   // 自定义状态码表示重定向过多
             }
         }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
         {
-            LogHelper.Warn($"页面请求超时 | URL: {url} | 超时时间: {_crawlerSettings.RequestTimeoutSeconds}s", nameof(CrawlerEngine));
+            LogHelper.Warn($"页面请求超时 | URL: {currentUrl} | 超时时间: {_crawlerSettings.RequestTimeoutSeconds}s", nameof(CrawlerEngine));
             pageResult.StatusCode = 408;
         }
         catch (TaskCanceledException)
         {
-            LogHelper.Warn($"页面爬取被取消 | URL: {url}", nameof(CrawlerEngine));
+            LogHelper.Warn($"页面爬取被取消 | URL: {currentUrl}", nameof(CrawlerEngine));
             pageResult.StatusCode = 499;
         }
         catch (HttpRequestException ex)
         {
-            LogHelper.Error(ex, $"HTTP请求异常 | URL: {url}", nameof(CrawlerEngine));
+            LogHelper.Error(ex, $"HTTP请求异常 | URL: {currentUrl}", nameof(CrawlerEngine));
             pageResult.StatusCode = ex.StatusCode.HasValue ? (int)ex.StatusCode : 500;
         }
         catch (Exception ex)
         {
-            LogHelper.Error(ex, $"页面爬取未知异常 | URL: {url}", nameof(CrawlerEngine));
+            LogHelper.Error(ex, $"页面爬取未知异常 | URL: {currentUrl}", nameof(CrawlerEngine));
             pageResult.StatusCode = 500;
         }
 
@@ -247,10 +303,8 @@ public sealed class CrawlerEngine(IHttpClientFactory httpClientFactory,
             var config = Configuration.Default;
             var context = BrowsingContext.New(config);
 
-            // 【修正】使用using确保文档对象正确释放
             using var document = await context.OpenAsync(req => req.Content(html).Address(baseUrl));
 
-            // 【修正】使用HashSet进行页面级链接去重，避免同一页面重复链接
             var uniqueLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             // 提取所有a标签href属性

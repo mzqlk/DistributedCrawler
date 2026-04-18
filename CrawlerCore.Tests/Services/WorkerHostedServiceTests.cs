@@ -2,6 +2,7 @@
 using CrawlerCore.Infrastructure;
 using CrawlerWorker.Communication;
 using CrawlerWorker.Services;
+using CrawlerWorker.Services.Engine;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -18,6 +19,8 @@ namespace CrawlerWorker.Tests.Services
         private readonly Mock<IHostApplicationLifetime> _mockAppLifetime;
         private readonly IOptions<GrpcSettings> _grpcSettingsOptions;
         private readonly IOptions<CrawlerSettings> _crawlerSettingsOptions;
+        private readonly IOptions<SignalRSettings> _signalRSettingsOptions;
+        private readonly Mock<CrawlerEngine> _mockCrawlerEngine;
         private readonly TestableWorkerHostedService _service;
 
         // 派生类，暴露受保护/私有方法
@@ -29,8 +32,10 @@ namespace CrawlerWorker.Tests.Services
                 IWorkerSessionManager sessionManager,
                 IOptions<GrpcSettings> grpcSettings,
                 IOptions<CrawlerSettings> crawlerSettings,
-                IHostApplicationLifetime appLifetime)
-                : base(grpcClientManager, nodeInfoCollector, sessionManager, grpcSettings, crawlerSettings, appLifetime)
+                IOptions<SignalRSettings> signalRSettings,
+                IHostApplicationLifetime appLifetime,
+                CrawlerEngine crawlerEngine)
+                : base(grpcClientManager, nodeInfoCollector, sessionManager, grpcSettings, crawlerSettings, signalRSettings, appLifetime, crawlerEngine)
             {
             }
 
@@ -59,13 +64,23 @@ namespace CrawlerWorker.Tests.Services
             };
             _crawlerSettingsOptions = Options.Create(crawlerSettings);
 
+            // 新增：SignalRSettings 和 CrawlerEngine（使用 Mock 或真实实例）
+            var signalRSettings = new SignalRSettings
+            {
+                // 如有必要，初始化属性
+            };
+            _signalRSettingsOptions = Options.Create(signalRSettings);
+            _mockCrawlerEngine = new Mock<CrawlerEngine>();
+
             _service = new TestableWorkerHostedService(
                 _mockGrpcClientManager.Object,
                 _mockNodeInfoCollector.Object,
                 _mockSessionManager.Object,
                 _grpcSettingsOptions,
                 _crawlerSettingsOptions,
-                _mockAppLifetime.Object);
+                _signalRSettingsOptions,
+                _mockAppLifetime.Object,
+                _mockCrawlerEngine.Object);
         }
 
         [Fact]

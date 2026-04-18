@@ -115,6 +115,8 @@ message TaskProgress {
   int32 total_pages = 3;
   TaskStatus current_status = 4;
   string error_message = 5;
+  string task_name = 6;
+  string assigned_node_id = 7;
 }
 
 /// <summary>

@@ -14,6 +14,11 @@ namespace CrawlerCore.Entities
         public string Url { get; set; } = string.Empty;
 
         /// <summary>
+        /// 重定向后的最终URL（如果有重定向，否则与Url相同）
+        /// </summary>
+        public string FinalUrl { get; set; } = string.Empty;
+
+        /// <summary>
         /// HTTP响应状态码（如200/404/500）
         /// </summary>
         public int StatusCode { get; set; }

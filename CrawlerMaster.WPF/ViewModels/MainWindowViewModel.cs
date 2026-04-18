@@ -470,7 +470,7 @@ namespace CrawlerMaster.WPF.ViewModels
                 var testTask = new CrawlerTask
                 {
                     TaskName = $"手动测试-{DateTime.Now:HHmmss}",
-                    PluginName = "ThesisPlugin",
+                    PluginName = "MockTestPlugin",
                     MaxDepth = 2,
                     MaxPages = 5,
                     Priority = 3,

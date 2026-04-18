@@ -12,5 +12,10 @@
         public int MaxConcurrentRequests { get; set; } = 10;
         public int DelayBetweenRequestsMs { get; set; } = 1000;
         public bool EnableProgressSimulation { get; set; } = false;
+
+        /// <summary>
+        /// Worker节点最大并发执行任务数
+        /// </summary>
+        public int MaxConcurrentTasks { get; set; } = 5;
     }
 }

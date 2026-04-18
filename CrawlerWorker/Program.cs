@@ -74,7 +74,18 @@ try
             services.AddHostedService<WorkerHostedService>();
 
             // 5. 爬虫引擎注册
-            services.AddHttpClient("CrawlerEngineClient");
+            services.AddHttpClient("CrawlerEngineClient")
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        AllowAutoRedirect = false,
+        MaxAutomaticRedirections = 10,
+        ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
+    })
+    .ConfigureHttpClient(client =>
+    {
+        client.DefaultRequestHeaders.Add("User-Agent", "CrawlerWorker/1.0");
+        client.Timeout = TimeSpan.FromSeconds(30);
+    });
             services.AddSingleton<IPluginManager, PluginManager>();
             services.AddSingleton<CrawlerEngine>();
         })
