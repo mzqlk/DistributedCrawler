@@ -46,7 +46,6 @@ namespace CrawlerMaster.WPF.Data
                 entity.HasIndex(e => e.AssignedNode);
                 entity.HasIndex(e => e.Status);
 
-                // 修复：添加StartUrls的ValueComparer
                 entity.Property(e => e.StartUrls)
                         .HasConversion(
                             v => JsonSerializer.Serialize(v, _jsonOptions),
@@ -58,7 +57,6 @@ namespace CrawlerMaster.WPF.Data
                                 c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
                                 c => c.ToList()));
 
-                // 修复：添加Configuration的ValueComparer
                 entity.Property(e => e.Configuration)
                         .HasConversion(
                             v => JsonSerializer.Serialize(v, _jsonOptions),
@@ -78,6 +76,7 @@ namespace CrawlerMaster.WPF.Data
                 entity.ToTable("CrawlResults");
                 entity.Property(e => e.TaskId).IsRequired();
                 entity.HasMany(e => e.PageResults).WithOne().HasForeignKey("ResultId").OnDelete(DeleteBehavior.Cascade);
+                entity.Property(e => e.CompletedAt).IsRequired().HasDefaultValueSql("DATETIME('now')");
             });
 
             modelBuilder.Entity<PageResult>(entity =>
@@ -86,8 +85,9 @@ namespace CrawlerMaster.WPF.Data
                 entity.HasKey("Id");
                 entity.ToTable("PageResults");
                 entity.Property(e => e.Url).IsRequired().HasMaxLength(2048);
+                entity.Property(e => e.FinalUrl).IsRequired().HasMaxLength(2048);
+                entity.Property(e => e.StatusCode).HasMaxLength(10);
 
-                // 修复：添加ParsedData的ValueComparer
                 entity.Property(e => e.ParsedData)
                       .HasConversion(
                           v => JsonSerializer.Serialize(v, _jsonOptions),
@@ -99,7 +99,6 @@ namespace CrawlerMaster.WPF.Data
                               c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.Key.GetHashCode(), v.Value != null ? v.Value.GetHashCode() : 0)),
                               c => c.ToDictionary(x => x.Key, x => x.Value)));
 
-                // 修复：添加Links的ValueComparer
                 entity.Property(e => e.Links)
                       .HasConversion(
                           v => JsonSerializer.Serialize(v, _jsonOptions),

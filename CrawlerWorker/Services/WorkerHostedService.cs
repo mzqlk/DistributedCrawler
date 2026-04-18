@@ -6,6 +6,7 @@ using CrawlerCore.Protos;
 using CrawlerWorker.Communication;
 using CrawlerWorker.Services.Engine;
 using CrawlerWorker.Services.Simulation;
+using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -283,21 +284,21 @@ namespace CrawlerWorker.Services
 
                 // 任务正常完成，上报最终状态
                 LogHelper.Info($"任务执行完成，TaskId: {task.TaskId}, 总爬取页面数: {crawlResult.PageResults.Count}");
-                await ReportTaskFinalProgressAsync(task, crawlResult.PageResults.Count, TaskStatus.Completed).ConfigureAwait(false);
+                await ReportTaskFinalProgressAsync(task, crawlResult, TaskStatus.Completed).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 // 任务被取消，更新状态为失败
                 task.Status = TaskStatus.Failed;
                 LogHelper.Warn($"任务被取消，TaskId: {task.TaskId}");
-                await ReportTaskFinalProgressAsync(task, 0, TaskStatus.Failed, "任务被取消").ConfigureAwait(false);
+                await ReportTaskFinalProgressAsync(task, new CrawlerCore.Entities.CrawlResult(), TaskStatus.Failed, "任务被取消"). ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 // 任务执行异常，更新状态为失败
                 task.Status = TaskStatus.Failed;
                 LogHelper.Error(ex, $"任务执行异常，TaskId: {task.TaskId}");
-                await ReportTaskFinalProgressAsync(task, 0, TaskStatus.Failed, ex.Message).ConfigureAwait(false);
+                await ReportTaskFinalProgressAsync(task, new CrawlerCore.Entities.CrawlResult(), TaskStatus.Failed, ex.Message).ConfigureAwait(false);
             }
             finally
             {
@@ -423,7 +424,7 @@ namespace CrawlerWorker.Services
         /// <summary>
         /// 任务最终状态强制上报：忽略节流间隔，确保Master收到最终结果
         /// </summary>
-        private async Task ReportTaskFinalProgressAsync(CrawlerTask task, int crawledPages, TaskStatus finalStatus, string? errorMessage = null)
+        private async Task ReportTaskFinalProgressAsync(CrawlerTask task, CrawlerCore.Entities.CrawlResult crawlResult, TaskStatus finalStatus, string? errorMessage = null)
         {
             try
             {
@@ -431,7 +432,7 @@ namespace CrawlerWorker.Services
                 {
                     TaskId = task.TaskId,
                     TaskName = task.TaskName,
-                    CrawledPages = crawledPages,
+                    CrawledPages = crawlResult.PageResults.Count,
                     TotalPages = task.MaxPages,
                     CurrentStatus = (CrawlerCore.Protos.TaskStatus)finalStatus,
                     AssignedNodeId = task.AssignedNode,
@@ -441,6 +442,48 @@ namespace CrawlerWorker.Services
                 var fromWorkerMessage = new FromWorker { TaskProgress = progressMessage };
                 await SendMessageAsync(fromWorkerMessage).ConfigureAwait(false);
                 LogHelper.Info($"任务最终状态上报完成，TaskId: {task.TaskId}, 状态: {finalStatus}");
+
+                if(finalStatus == TaskStatus.Completed) 
+                {
+                    var crawlResultMessage = new CrawlerCore.Protos.CrawlResult
+                    {
+                        TaskId = task.TaskId,
+                        CompletedAt = crawlResult.CompletedAt.HasValue
+                        ? Timestamp.FromDateTime(crawlResult.CompletedAt.Value.ToUniversalTime())
+                        : null
+                    };
+
+                    if (crawlResult.PageResults != null)
+                    {
+                        foreach (var pr in crawlResult.PageResults)
+                        {
+                            var protoPr = new CrawlerCore.Protos.PageResult
+                            {
+                                Url = pr.Url ?? string.Empty,
+                                Finalurl = pr.FinalUrl ?? string.Empty,
+                                StatusCode = pr.StatusCode
+                            };
+
+                            if (pr.ParsedData != null && pr.ParsedData.Count > 0)
+                            {
+                                var dict = pr.ParsedData.ToDictionary(
+                                    kv => kv.Key,
+                                    kv => kv.Value?.ToString() ?? string.Empty);
+                                protoPr.ParsedData.Add(dict);
+                            }
+
+                            if (pr.Links != null && pr.Links.Count > 0)
+                            {
+                                protoPr.Links.Add(pr.Links);
+                            }
+
+                            crawlResultMessage.PageResults.Add(protoPr);                            
+                        }
+                        fromWorkerMessage = new FromWorker { CrawlResult = crawlResultMessage };
+                        await SendMessageAsync(fromWorkerMessage).ConfigureAwait(false);
+                        LogHelper.Info($"任务结果上报完成，TaskId: {task.TaskId}, 爬取页面数: {crawlResult.PageResults.Count}");
+                    }
+                }
             }
             catch (Exception ex)
             {

@@ -92,6 +92,7 @@ message CrawlerTask {
 /// </summary>
 message PageResult {
   string url = 1;
+  string finalurl = 5;
   int32 status_code = 2;
   map<string, string> parsed_data = 3;
   repeated string links = 4;
@@ -111,12 +112,12 @@ message CrawlResult {
 /// </summary>
 message TaskProgress {
   string task_id = 1;
+  string task_name = 6;
   int32 crawled_pages = 2;
   int32 total_pages = 3;
   TaskStatus current_status = 4;
-  string error_message = 5;
-  string task_name = 6;
   string assigned_node_id = 7;
+  string error_message = 5;
 }
 
 /// <summary>

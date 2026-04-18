@@ -457,10 +457,45 @@ namespace CrawlerMaster.WPF.Services
             }
         }
 
-        private void HandleCrawlResultMessage(string nodeId, CrawlerCore.Protos.CrawlResult result)
+        private async void HandleCrawlResultMessage(string nodeId, CrawlerCore.Protos.CrawlResult result)
         {
-            _logger.LogInformation(
-                $"收到节点 {nodeId} 爬取结果: TaskId={result.TaskId}, 页面数={result.PageResults.Count}");
+            _logger.LogInformation($"收到节点 {nodeId} 爬取结果: TaskId={result.TaskId}, 页面数={result.PageResults.Count}");
+
+            // 数据持久化到数据库
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<Data.CrawlerDbContext>();
+
+                // Proto转实体
+                var entity = new CrawlerCore.Entities.CrawlResult
+                {
+                    TaskId = result.TaskId,
+                    CompletedAt = result.CompletedAt != null && result.CompletedAt.Seconds > 0
+                        ? DateTimeOffset.FromUnixTimeSeconds(result.CompletedAt.Seconds).UtcDateTime
+                        : DateTime.UtcNow,
+                    PageResults = new List<CrawlerCore.Entities.PageResult>()
+                };
+                foreach (var page in result.PageResults)
+                {
+                    var pageEntity = new CrawlerCore.Entities.PageResult
+                    {
+                        Url = page.Url,
+                        FinalUrl = page.Finalurl,
+                        StatusCode = page.StatusCode,
+                        ParsedData = page.ParsedData.ToDictionary(kv => kv.Key, kv => (object)kv.Value),
+                        Links = new System.Collections.Generic.List<string>(page.Links)
+                    };
+                    entity.PageResults.Add(pageEntity);
+                }
+                dbContext.CrawlResults.Add(entity);
+                await dbContext.SaveChangesAsync();
+                _logger.LogInformation($"爬取结果已持久化: TaskId={entity.TaskId}, 页面数={entity.PageResults.Count}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"持久化节点 {nodeId} 爬取结果到数据库失败: TaskId={result.TaskId}");
+            }
 
             var resultHandler = Volatile.Read(ref _crawlResultReceived);
             if (resultHandler != null)
