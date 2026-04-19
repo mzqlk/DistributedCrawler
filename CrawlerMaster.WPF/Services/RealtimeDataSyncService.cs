@@ -31,7 +31,7 @@ namespace CrawlerMaster.WPF.Services
         private readonly ConcurrentDictionary<string, DateTime> _nodeLastPushTime = new();
         private readonly ConcurrentDictionary<string, DateTime> _taskLastPushTime = new();
 
-        // 【修复】订阅状态锁，避免重复订阅
+        // 订阅状态锁，避免重复订阅
         private readonly object _subscriptionLock = new();
         private bool _isSubscribed = false;
         private Guid _nodeStatusSubscriptionId;
@@ -61,13 +61,13 @@ namespace CrawlerMaster.WPF.Services
         }
         #endregion
 
-        #region 托管服务生命周期（修复重复订阅+异常隔离）
+        #region 托管服务生命周期
         public override Task StartAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("实时数据同步服务启动");
             _isStopped = false;
 
-            // 【修复】锁+状态判断，避免重复订阅
+            // 锁+状态判断，避免重复订阅
             lock (_subscriptionLock)
             {
                 if (_isSubscribed)
@@ -197,7 +197,7 @@ namespace CrawlerMaster.WPF.Services
                 }
 
                 var pushDelegate = BuildNodePushDelegate(args);
-                // 【修复】ChannelClosedException捕获
+                // ChannelClosedException捕获
                 if (!_pushChannel.Writer.TryWrite(pushDelegate))
                 {
                     _logger.LogWarning($"节点 {args.NodeId} 状态推送写入通道失败");
@@ -250,7 +250,7 @@ namespace CrawlerMaster.WPF.Services
         }
         #endregion
 
-        #region 推送委托构建（线程安全+数值兜底）
+        #region 推送委托构建
         private Func<IHubContext<CrawlerHub, ICrawlerHubClient>, Task> BuildNodePushDelegate(NodeStatusChangedEventArgs args)
         {
             return async (hubContext) =>
@@ -276,7 +276,7 @@ namespace CrawlerMaster.WPF.Services
 
                 if (!shouldPush) return;
 
-                // 【修复】数值兜底，避免负数导致UI异常
+                // 数值兜底，避免负数导致UI异常
                 var message = new NodeUpdateMessage
                 {
                     NodeId = args.NodeId,

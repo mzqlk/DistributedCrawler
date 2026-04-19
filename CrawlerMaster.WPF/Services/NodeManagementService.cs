@@ -119,6 +119,9 @@ namespace CrawlerMaster.WPF.Services
                     return true;
                 }
 
+                _eventAggregator.Publish(this,
+                    new NodeStatusChangedEventArgs(node.NodeId, node.Status, node.Status, node));
+
                 return await _dbContext.SaveChangesAsync() > 0;
             }
             finally

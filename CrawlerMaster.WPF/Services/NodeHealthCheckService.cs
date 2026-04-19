@@ -60,8 +60,11 @@ namespace CrawlerMaster.WPF.Services
         private void OnNodeStatusChanged(object? sender, NodeStatusChangedEventArgs args)
         {
             // 结构化日志记录所有状态变更
-            Log.Information("节点状态变更 | NodeId:{NodeId} 旧状态:{OldStatus} 新状态:{NewStatus} 时间:{Time}",
-                args.NodeId, args.OldStatus, args.NewStatus, args.ChangedTime);
+            if (args.OldStatus != args.NewStatus)
+            {
+                Log.Information("节点状态变更 | NodeId:{NodeId} 旧状态:{OldStatus} 新状态:{NewStatus} 时间:{Time}",
+                    args.NodeId, args.OldStatus, args.NewStatus, args.ChangedTime);
+            }
 
             // 离线状态打印警告日志
             if (args.NewStatus == NodeStatus.Offline)

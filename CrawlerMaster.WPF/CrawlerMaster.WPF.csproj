@@ -20,10 +20,11 @@
 	<PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
 	<PackageReference Include="Google.Protobuf" Version="3.34.1" />
 	<PackageReference Include="Grpc.Tools" Version="2.80.0" PrivateAssets="All" />
-	<PackageReference Include="LiveChartsCore.SkiaSharpView.WPF" Version="2.0.0" />
 	<PackageReference Include="MaterialDesignColors" Version="5.3.1" />
 	<PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.6" />
 	<PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.6" />
+	<PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.142" />
+	<PackageReference Include="OxyPlot.Wpf" Version="2.2.0" />
 	<!-- Serilog日志 -->
 	<PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
 	<PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
