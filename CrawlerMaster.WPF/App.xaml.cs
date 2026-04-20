@@ -160,6 +160,7 @@ public partial class App : Application
                     services.AddSingleton<TaskManagementViewModel>();
                     services.AddSingleton<DataViewerViewModel>();
                     services.AddTransient<NodeDetailViewModel>();
+                    services.AddTransient<CreateTaskViewModel>();
                     services.AddTransient<MainWindow>(sp => new MainWindow(sp.GetRequiredService<MainWindowViewModel>()));
                 })
                 .Build();

@@ -1,13 +1,142 @@
 ﻿<UserControl x:Class="CrawlerMaster.WPF.Views.TaskManagementView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
-             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
-             mc:Ignorable="d" 
-             d:DesignHeight="450" d:DesignWidth="800">
-    <Grid>
-        <TextBlock Text="任务管理视图（待实现）" 
-                   Style="{StaticResource MaterialDesignHeadline5TextBlock}"
-                   VerticalAlignment="Center" HorizontalAlignment="Center" />
-    </Grid>
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+             xmlns:converters="clr-namespace:CrawlerMaster.WPF.Converters"
+             xmlns:entities="clr-namespace:CrawlerCore.Entities;assembly=CrawlerCore"
+             mc:Ignorable="d"
+             d:DesignHeight="800" d:DesignWidth="1200">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <!-- 直接使用项目已有的转换器（不重新定义） -->
+            <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+            <converters:GreaterThanConverter x:Key="GreaterThanConverter" />
+            <converters:NullToDashConverter x:Key="NullToDashConverter" />
+
+            <!-- 任务状态行样式（使用项目实体） -->
+            <Style x:Key="TaskStatusRowStyle" TargetType="DataGridRow">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding Status}" Value="{x:Static entities:TaskStatus.Pending}">
+                        <Setter Property="Background" Value="#FFF3E0"/>
+                        <Setter Property="Foreground" Value="#EF6C00"/>
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding Status}" Value="{x:Static entities:TaskStatus.Running}">
+                        <Setter Property="Background" Value="#E3F2FD"/>
+                        <Setter Property="Foreground" Value="#1565C0"/>
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding Status}" Value="{x:Static entities:TaskStatus.Completed}">
+                        <Setter Property="Background" Value="#E8F5E9"/>
+                        <Setter Property="Foreground" Value="#2E7D32"/>
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding Status}" Value="{x:Static entities:TaskStatus.Failed}">
+                        <Setter Property="Background" Value="#FFEBEE"/>
+                        <Setter Property="Foreground" Value="#C62828"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- 通用居中文字样式 -->
+            <Style x:Key="CenteredTextStyle" TargetType="TextBlock">
+                <Setter Property="HorizontalAlignment" Value="Center"/>
+            </Style>
+
+            <!-- 进度高亮样式（>80% 高亮） -->
+            <Style x:Key="ProgressTextStyle" TargetType="TextBlock" BasedOn="{StaticResource CenteredTextStyle}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding ProgressPercent, Converter={StaticResource GreaterThanConverter}, ConverterParameter=80}" Value="True">
+                        <Setter Property="Foreground" Value="#F57C00"/>
+                        <Setter Property="FontWeight" Value="SemiBold"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <materialDesign:DialogHost Identifier="TaskDialogHost">
+        <Grid Margin="16">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- 顶部操作栏 -->
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0 0 0 16">
+                <Button Content="创建任务"
+                    Style="{StaticResource MaterialDesignRaisedButton}"
+                    Background="#2196F3" Foreground="White"
+                    Command="{Binding ShowCreateTaskDialogCommand}"
+                    Width="160" Height="36" Margin="0 0 12 0"/>
+
+                <Button Content="刷新列表"
+                    Style="{StaticResource MaterialDesignOutlinedButton}"
+                    Command="{Binding LoadTaskListCommand}"
+                    Width="120" Height="36" Margin="0 0 12 0"/>
+
+                <TextBlock Text="正在加载..."
+                       VerticalAlignment="Center"
+                       Foreground="#FF607D8B"
+                       Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+            </StackPanel>
+
+            <!-- 空数据占位符（修复：使用DataTrigger实现，避免复杂绑定） -->
+            <Border Grid.Row="1"
+                Background="#FAFAFA" CornerRadius="8">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding TaskList.Count}" Value="0">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <!-- 修复：使用存在的MaterialDesign图标 -->
+                    <materialDesign:PackIcon Kind="ClipboardTextOff" Width="64" Height="64" Foreground="#9E9E9E"/>
+                    <TextBlock Text="暂无任务数据，点击「创建示例任务」添加" Margin="0 16 0 0" FontSize="16" Foreground="#757575" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 任务列表 DataGrid（100% 兼容项目结构） -->
+            <DataGrid Grid.Row="1"
+                  ItemsSource="{Binding TaskList}"
+                  RowStyle="{StaticResource TaskStatusRowStyle}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserSortColumns="True"
+                  EnableRowVirtualization="True"
+                  EnableColumnVirtualization="True"
+                  VirtualizingStackPanel.IsVirtualizing="True"
+                  VirtualizingStackPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.CanContentScroll="True"
+                  MaxWidth="1920"
+                  materialDesign:DataGridAssist.CellPadding="8 4"
+                  materialDesign:DataGridAssist.ColumnHeaderPadding="20,4,0,4"
+                  ColumnHeaderHeight="36">
+
+                <DataGrid.Columns>
+                    <!-- 任务ID -->
+                    <DataGridTextColumn Header="任务ID" Binding="{Binding TaskId}" Width="280"/>
+                    <!-- 任务名称 -->
+                    <DataGridTextColumn Header="任务名称" Binding="{Binding TaskName}" Width="*"/>
+                    <!-- 任务状态 -->
+                    <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="90" ElementStyle="{StaticResource CenteredTextStyle}"/>
+                    <!-- 已爬取页数 -->
+                    <DataGridTextColumn Header="已爬取" Binding="{Binding CompletedPages}" Width="75" ElementStyle="{StaticResource CenteredTextStyle}"/>
+                    <!-- 总页数 -->
+                    <DataGridTextColumn Header="总页数" Binding="{Binding TotalPages, TargetNullValue='-'}" Width="75" ElementStyle="{StaticResource CenteredTextStyle}"/>
+                    <!-- 进度百分比 -->
+                    <DataGridTextColumn Header="进度(%)" Binding="{Binding ProgressPercent, StringFormat={}{0:F2}}" Width="100" ElementStyle="{StaticResource ProgressTextStyle}"/>
+                    <!-- 分配节点 -->
+                    <DataGridTextColumn Header="分配节点" Binding="{Binding AssignedNode, Converter={StaticResource NullToDashConverter}}" Width="200"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </materialDesign:DialogHost>
 </UserControl>

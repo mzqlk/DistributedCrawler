@@ -10,6 +10,9 @@ using System.Threading.Tasks;
 
 namespace CrawlerMaster.WPF.ViewModels
 {
+    /// <summary>
+    /// 节点详情页的ViewModel，负责展示单个节点的详细信息和历史数据图表。
+    /// </summary>
     public partial class NodeDetailViewModel : ObservableObject, IAsyncDisposable
     {
         #region 私有字段
