@@ -12,56 +12,50 @@
         <!-- 任务名称 -->
         <TextBox materialDesign:HintAssist.Hint="任务名称 *"
                  materialDesign:HintAssist.IsFloating="True"
-                 Text="{Binding TaskName, UpdateSourceTrigger=PropertyChanged}"
-                 Margin="0 8 16 0"/>
-        <TextBlock Text="{Binding Errors[TaskName], TargetNullValue=''}" 
-                   Foreground="#D32F2F" FontSize="12" Margin="0 -12 0 16"/>
+                 Text="{Binding TaskName, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                 Margin="0 16 16 0"/>
 
         <!-- 插件名称 -->
         <TextBox materialDesign:HintAssist.Hint="插件名称 *"
                  materialDesign:HintAssist.IsFloating="True"
-                 Text="{Binding PluginName, UpdateSourceTrigger=PropertyChanged}"
-                 Margin="0 8 16 0"/>
-        <TextBlock Text="{Binding Errors[PluginName], TargetNullValue=''}" 
-                   Foreground="#D32F2F" FontSize="12" Margin="0 -12 0 16"/>
+                 Text="{Binding PluginName, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                 Margin="0 16 16 0"/>
 
         <!-- 起始URL -->
         <TextBox materialDesign:HintAssist.Hint="起始URL (多个用逗号分隔) *"
                  materialDesign:HintAssist.IsFloating="True"
-                 Text="{Binding StartUrlsText, UpdateSourceTrigger=PropertyChanged}"
-                 Margin="0 8 16 0"/>
-        <TextBlock Text="{Binding Errors[StartUrlsText], TargetNullValue=''}" 
-                   Foreground="#D32F2F" FontSize="12" Margin="0 -12 0 16"/>
+                 Text="{Binding StartUrlsText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                 Margin="0 16 16 0"/>
 
         <!-- 最大深度 -->
         <materialDesign:NumericUpDown materialDesign:HintAssist.Hint="最大深度 *"
                                        materialDesign:HintAssist.IsFloating="True"
-                                       Value="{Binding MaxDepth, UpdateSourceTrigger=PropertyChanged}"
-                                       Minimum="1" Maximum="10" Margin="0 8 16 0"/>
+                                       Value="{Binding MaxDepth, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                       Minimum="1" Maximum="10" Margin="0 16 16 0"/>
 
         <!-- 最大页数 -->
         <materialDesign:NumericUpDown materialDesign:HintAssist.Hint="最大页数 *"
                                        materialDesign:HintAssist.IsFloating="True"
-                                       Value="{Binding MaxPages, UpdateSourceTrigger=PropertyChanged}"
-                                       Minimum="1" Maximum="10000" Margin="0 8 16 0"/>
+                                       Value="{Binding MaxPages, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                       Minimum="1" Maximum="10000" Margin="0 16 16 0"/>
 
         <!-- 优先级 -->
         <materialDesign:NumericUpDown materialDesign:HintAssist.Hint="优先级 (1-5)"
                                        materialDesign:HintAssist.IsFloating="True"
-                                       Value="{Binding Priority, UpdateSourceTrigger=PropertyChanged}"
-                                       Minimum="1" Maximum="5" Margin="0 8 24 0"/>
+                                       Value="{Binding Priority, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                       Minimum="1" Maximum="5" Margin="0 16 24 0"/>
 
         <!-- 按钮组 -->
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="取消" 
                     Style="{StaticResource MaterialDesignOutlinedButton}"
                     Command="{x:Static materialDesign:DialogHost.CloseDialogCommand}"
-                    Width="100" Height="36" Margin="0 8 12 0"/>
+                    Width="100" Height="36" Margin="0 16 12 0"/>
             <Button Content="创建" 
                     Style="{StaticResource MaterialDesignRaisedButton}"
                     Background="#2196F3" Foreground="White"
                     Command="{Binding CreateTaskCommand}"
-                    Width="100" Height="36" Margin="0 8 0 0"/>
+                    Width="100" Height="36" Margin="0 16 0 0"/>
         </StackPanel>
     </StackPanel>
 </UserControl>

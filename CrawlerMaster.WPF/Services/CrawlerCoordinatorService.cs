@@ -491,6 +491,22 @@ namespace CrawlerMaster.WPF.Services
                 _logger.LogError(ex, $"持久化节点 {nodeId} 爬取结果到数据库失败: TaskId={result.TaskId}");
             }
 
+            try
+            {
+                var eventArgs = new CrawlResultReceivedEventArgs(
+                    result.TaskId,
+                    result.PageResults.Count,
+                    result.CompletedAt != null && result.CompletedAt.Seconds > 0
+                        ? DateTimeOffset.FromUnixTimeSeconds(result.CompletedAt.Seconds).UtcDateTime
+                        : DateTime.UtcNow);
+
+                _eventAggregator.Publish(this, eventArgs);
+            }
+            catch(Exception ex)
+            {
+                _logger.LogError(ex, $"发布节点 {nodeId} 爬取结果事件失败: TaskId={result.TaskId}");
+            }
+
             var resultHandler = Volatile.Read(ref _crawlResultReceived);
             if (resultHandler != null)
             {

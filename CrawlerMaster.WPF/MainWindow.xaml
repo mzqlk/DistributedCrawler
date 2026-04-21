@@ -8,7 +8,7 @@
         xmlns:views="clr-namespace:CrawlerMaster.WPF.Views"
         mc:Ignorable="d"
         Title="分布式爬虫 Master 控制台" 
-        Height="720" Width="1280"
+        Height="1080" Width="1280"
         MinHeight="600" MinWidth="960"
         WindowStartupLocation="CenterScreen"
         d:DataContext="{d:DesignInstance Type=viewModels:MainWindowViewModel, IsDesignTimeCreatable=False}">

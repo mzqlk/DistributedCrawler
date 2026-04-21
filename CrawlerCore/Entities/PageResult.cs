@@ -8,6 +8,10 @@ namespace CrawlerCore.Entities
     /// </summary>
     public class PageResult
     {
+        public long Id { get; set; }
+
+        public long ResultId { get; set; }
+
         /// <summary>
         /// 爬取的目标URL
         /// </summary>

@@ -176,5 +176,88 @@ namespace CrawlerMaster.WPF.Services
             _dbContext.Entry(existing).CurrentValues.SetValues(task);
             return await _dbContext.SaveChangesAsync() > 0;
         }
+
+        #region ITaskDataService 扩展实现
+        public async Task<List<CrawlResult>> GetAllCrawlResultsAsync()
+        {
+            // 不预加载PageResult，按需延迟加载，避免一次性加载大量数据
+            return await _dbContext.CrawlResults
+                .AsNoTracking()
+                .OrderByDescending(cr => cr.CompletedAt)
+                .ToListAsync();
+        }
+
+        public async Task<CrawlResult?> GetCrawlResultByTaskIdAsync(string taskId)
+        {
+            return await _dbContext.CrawlResults
+                .AsNoTracking()
+                .FirstOrDefaultAsync(cr => cr.TaskId == taskId);
+        }
+
+        public async Task<List<PageResult>> GetPageResultsByResultIdAsync(long resultId)
+        {
+            return await _dbContext.PageResults
+                .AsNoTracking()
+                .Where(pr => pr.ResultId == resultId)
+                .OrderBy(pr => pr.Url)
+                .ToListAsync();
+        }
+
+        public async Task<(List<CrawlResult> Items, int TotalCount)> GetPagedCrawlResultsAsync(int pageIndex, int pageSize)
+        {
+            var totalCount = await _dbContext.CrawlResults.CountAsync();
+            var items = await _dbContext.CrawlResults
+                .AsNoTracking()
+                .OrderByDescending(cr => cr.CompletedAt)
+                .Skip(pageIndex * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+            return (items, totalCount);
+        }
+
+        public async Task<(List<CrawlResultProjection> Items, int TotalCount)> GetPagedCrawlResultProjectionsAsync(int pageIndex, int pageSize, string searchKeyword = "")
+        {
+            // 1. 构建基础查询（带筛选）
+            var query = _dbContext.CrawlResults
+                .AsNoTracking()
+                // 关联CrawlerTask获取TaskName
+                .Join(_dbContext.CrawlerTasks,
+                    cr => cr.TaskId,
+                    ct => ct.TaskId,
+                    (cr, ct) => new { cr, ct })
+                // 左关联PageResult获取数量
+                .GroupJoin(_dbContext.PageResults,
+                    x => x.cr.Id,
+                    pr => pr.ResultId,
+                    (x, prs) => new CrawlResultProjection
+                    {
+                        Id = x.cr.Id,
+                        TaskId = x.cr.TaskId,
+                        TaskName = x.ct.TaskName,
+                        PageResultCount = prs.Count(),
+                        CompletedAt = x.cr.CompletedAt
+                    });
+
+            // 2. 应用筛选（TaskId精确匹配或TaskName模糊匹配）
+            if (!string.IsNullOrWhiteSpace(searchKeyword))
+            {
+                query = query.Where(p =>
+                    p.TaskId == searchKeyword ||
+                    p.TaskName.Contains(searchKeyword));
+            }
+
+            // 3. 先获取总条数（避免分页后再Count）
+            var totalCount = await query.CountAsync();
+
+            // 4. 应用排序和分页
+            var items = await query
+                .OrderByDescending(p => p.CompletedAt)
+                .Skip(pageIndex * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+
+            return (items, totalCount);
+        }
+        #endregion
     }
 }

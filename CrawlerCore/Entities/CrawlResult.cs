@@ -9,6 +9,8 @@ namespace CrawlerCore.Entities
     /// </summary>
     public class CrawlResult
     {
+        public long Id { get; set; }
+
         /// <summary>
         /// 关联的爬虫任务ID（与CrawlerTask.TaskId一致）
         /// </summary>

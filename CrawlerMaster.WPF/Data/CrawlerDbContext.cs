@@ -9,9 +9,6 @@ using System.Text.Json;
 
 namespace CrawlerMaster.WPF.Data
 {
-    /// <summary>
-    /// 数据库上下文类，负责管理爬虫任务、爬取结果和节点信息的存储和访问。
-    /// </summary>
     public class CrawlerDbContext : DbContext
     {
         private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
@@ -71,22 +68,24 @@ namespace CrawlerMaster.WPF.Data
 
             modelBuilder.Entity<CrawlResult>(entity =>
             {
-                entity.Property<long>("Id").ValueGeneratedOnAdd();
-                entity.HasKey("Id");
+                entity.HasKey(e => e.Id);
                 entity.ToTable("CrawlResults");
+                entity.Property(e => e.Id).ValueGeneratedOnAdd();
                 entity.Property(e => e.TaskId).IsRequired();
-                entity.HasMany(e => e.PageResults).WithOne().HasForeignKey("ResultId").OnDelete(DeleteBehavior.Cascade);
-                entity.Property(e => e.CompletedAt).IsRequired().HasDefaultValueSql("DATETIME('now')");
+                entity.HasMany(e => e.PageResults)
+                      .WithOne()
+                      .HasForeignKey(pr => pr.ResultId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.Property(e => e.CompletedAt).IsRequired(false);
             });
 
             modelBuilder.Entity<PageResult>(entity =>
             {
-                entity.Property<long>("Id").ValueGeneratedOnAdd();
-                entity.HasKey("Id");
+                entity.HasKey(e => e.Id);
                 entity.ToTable("PageResults");
+                entity.Property(e => e.Id).ValueGeneratedOnAdd();
                 entity.Property(e => e.Url).IsRequired().HasMaxLength(2048);
                 entity.Property(e => e.FinalUrl).IsRequired().HasMaxLength(2048);
-                entity.Property(e => e.StatusCode).HasMaxLength(10);
 
                 entity.Property(e => e.ParsedData)
                       .HasConversion(

@@ -73,5 +73,53 @@ namespace CrawlerCore.Interfaces
         /// <param name="task">任务实体</param>
         /// <returns>是否更新成功</returns>
         Task<bool> UpdateTaskAsync(CrawlerTask task);
+
+        #region 爬取结果数据访问扩展
+        /// <summary>
+        /// 获取所有爬取总结果（含关联的任务信息，按需加载PageResult）
+        /// </summary>
+        /// <returns>爬取总结果列表</returns>
+        Task<List<CrawlResult>> GetAllCrawlResultsAsync();
+
+        /// <summary>
+        /// 根据任务ID获取爬取总结果
+        /// </summary>
+        /// <param name="taskId">爬虫任务ID</param>
+        /// <returns>对应爬取总结果（不存在则为null）</returns>
+        Task<CrawlResult?> GetCrawlResultByTaskIdAsync(string taskId);
+
+        /// <summary>
+        /// 根据爬取结果ID获取关联的所有单页爬取结果
+        /// </summary>
+        /// <param name="resultId">CrawlResult主键ID</param>
+        /// <returns>单页爬取结果列表</returns>
+        Task<List<PageResult>> GetPageResultsByResultIdAsync(long resultId);
+
+        /// <summary>
+        /// 批量获取爬取结果（含分页，大数据量优化）
+        /// </summary>
+        /// <param name="pageIndex">页码</param>
+        /// <param name="pageSize">每页条数</param>
+        /// <returns>分页后的爬取结果列表+总条数</returns>
+        Task<(List<CrawlResult> Items, int TotalCount)> GetPagedCrawlResultsAsync(int pageIndex, int pageSize);
+
+        /// <summary>
+        /// 分页投影查询：一次性获取CrawlResult+关联TaskName+PageResultCount，支持筛选
+        /// </summary>
+        /// <param name="pageIndex">0-based页码</param>
+        /// <param name="pageSize">每页条数</param>
+        /// <param name="searchKeyword">搜索关键词（TaskId/TaskName模糊匹配）</param>
+        /// <returns>投影结果列表+总条数</returns>
+        Task<(List<CrawlResultProjection> Items, int TotalCount)> GetPagedCrawlResultProjectionsAsync(int pageIndex, int pageSize, string searchKeyword = "");
+        #endregion
+    }
+
+    public class CrawlResultProjection
+    {
+        public long Id { get; set; }
+        public string TaskId { get; set; } = string.Empty;
+        public string TaskName { get; set; } = string.Empty;
+        public int PageResultCount { get; set; }
+        public DateTime? CompletedAt { get; set; }
     }
 }
