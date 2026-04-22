@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/CrawlerPlugins/">
     <Project Path="MockPlugin/MockPlugin.csproj" Id="2751932f-352d-427d-9d25-f710c1d51bfe" />
+    <Project Path="ThesisPlugin/ThesisPlugin.csproj" Id="eb452431-3cf7-4d45-9888-10642d907b3c" />
   </Folder>
   <Folder Name="/解决方案项/">
     <File Path="docker-compose.yml" />

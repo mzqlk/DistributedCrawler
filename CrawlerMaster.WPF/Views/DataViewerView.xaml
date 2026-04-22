@@ -48,7 +48,8 @@
                         <TextBox x:Name="SearchTextBox" 
                                  Text="{Binding SearchKeyword, UpdateSourceTrigger=PropertyChanged}"
                                  materialDesign:HintAssist.Hint="输入任务ID/任务名称搜索"
-                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"/>
+                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"
+                                 Margin="0 12 0 0"/>
                     </Grid>
                 </materialDesign:Card>
                 <Button Content="搜索" Command="{Binding SearchCommand}" 

@@ -1,5 +1,6 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CrawlerCore.Common;
 using CrawlerCore.Entities;
 using CrawlerCore.Events;
 using CrawlerCore.Interfaces;
@@ -31,7 +32,6 @@ namespace CrawlerMaster.WPF.ViewModels
         [ObservableProperty]
         private ObservableCollection<PageResultDisplayInfo> _currentPageResults = new();
 
-        // 新增：选中的单页结果
         [ObservableProperty]
         private PageResultDisplayInfo? _selectedPageResult;
 
@@ -61,7 +61,9 @@ namespace CrawlerMaster.WPF.ViewModels
         {
             WriteIndented = true,
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-            ReferenceHandler = ReferenceHandler.IgnoreCycles
+            ReferenceHandler = ReferenceHandler.IgnoreCycles,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            Converters = { new SystemObjectJsonConverter() }
         };
         #endregion
 
@@ -77,7 +79,7 @@ namespace CrawlerMaster.WPF.ViewModels
         }
         #endregion
 
-        #region 核心方法（原有逻辑保留，新增功能扩展）
+        #region 核心方法
         [RelayCommand]
         public async Task LoadCrawlResultsAsync()
         {

@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj" />
     <ProjectReference Include="..\MockPlugin\MockPlugin.csproj" />
+    <ProjectReference Include="..\ThesisPlugin\ThesisPlugin.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -79,25 +80,11 @@
 		</RemoveDuplicates>
 
 		<ItemGroup>
-			<ValidPluginDlls Include="@(UniqueCandidateDlls)"
-					 Condition="Exists('%(Identity)') And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerCore')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerWorker')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerMaster')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('Google.')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('Grpc.')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('Microsoft.')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('Serilog')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('System.')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('AngleSharp')) And 
-                          !$([System.String]::Copy('%(Filename)').StartsWith('HtmlAgilityPack'))" />
+			<ValidPluginDlls Include="@(UniqueCandidateDlls)" Condition="Exists('%(Identity)') And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerCore')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerWorker')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerMaster')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('Google.')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('Grpc.')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('Microsoft.')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('Serilog')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('System.')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('AngleSharp')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('HtmlAgilityPack'))" />
 		</ItemGroup>
 
 		<!-- 5. 执行复制 -->
-		<Copy SourceFiles="@(ValidPluginDlls)"
-			  DestinationFolder="$(TargetPluginsDir)"
-			  SkipUnchangedFiles="True"
-			  OverwriteReadOnlyFiles="True" />
+		<Copy SourceFiles="@(ValidPluginDlls)" DestinationFolder="$(TargetPluginsDir)" SkipUnchangedFiles="True" OverwriteReadOnlyFiles="True" />
 
 		<!-- 6. 日志输出 (增加了源路径打印以便调试) -->
 		<Message Text="========================================" Importance="high" />
@@ -105,8 +92,8 @@
 		<Message Text="   阶段: $(CurrentPhase)" Importance="high" />
 		<Message Text="   扫描源: $(PluginsSourceRoot)" Importance="high" />
 		<Message Text="   目标目录: $(TargetPluginsDir)" Importance="high" />
-		<Message Text="   扫描到候选: @(UniqueCandidateDlls->Count()) 个" Importance="high" />
-		<Message Text="   有效插件数: @(ValidPluginDlls->Count()) 个" Importance="high" />
+		<Message Text="   扫描到候选: @(UniqueCandidateDlls-&gt;Count()) 个" Importance="high" />
+		<Message Text="   有效插件数: @(ValidPluginDlls-&gt;Count()) 个" Importance="high" />
 		<Message Text="   复制列表: @(ValidPluginDlls->'%(Filename)%(Extension)')" Importance="high" Condition="'@(ValidPluginDlls)'!=''" />
 		<Message Text="========================================" Importance="high" />
 	</Target>

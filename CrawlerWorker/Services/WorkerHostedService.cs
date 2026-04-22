@@ -1,4 +1,5 @@
-﻿using CrawlerCore.Entities;
+﻿using CrawlerCore.Common;
+using CrawlerCore.Entities;
 using CrawlerCore.Events;
 using CrawlerCore.Infrastructure;
 using CrawlerCore.Infrastructure.Constants;
@@ -13,6 +14,7 @@ using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -291,7 +293,7 @@ namespace CrawlerWorker.Services
                 // 任务被取消，更新状态为失败
                 task.Status = TaskStatus.Failed;
                 LogHelper.Warn($"任务被取消，TaskId: {task.TaskId}");
-                await ReportTaskFinalProgressAsync(task, new CrawlerCore.Entities.CrawlResult(), TaskStatus.Failed, "任务被取消"). ConfigureAwait(false);
+                await ReportTaskFinalProgressAsync(task, new CrawlerCore.Entities.CrawlResult(), TaskStatus.Failed, "任务被取消").ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -421,6 +423,20 @@ namespace CrawlerWorker.Services
             }
         }
 
+        private static string ConvertValueForProto(object? value)
+        {
+            if (value == null) return string.Empty;
+
+            System.Type type = value.GetType();
+
+            // 如果是基本类型、字符串或值类型，直接返回其字符串表示（不带引号）
+            if (type.IsPrimitive || type == typeof(string) || type.IsEnum || type == typeof(decimal))
+                return value.ToString()!;
+
+            // 如果是集合、字典或其他复杂类型，序列化为 JSON
+            return JsonSerializer.Serialize(value, JsonConfig.Options);
+        }
+
         /// <summary>
         /// 任务最终状态强制上报：忽略节流间隔，确保Master收到最终结果
         /// </summary>
@@ -443,7 +459,7 @@ namespace CrawlerWorker.Services
                 await SendMessageAsync(fromWorkerMessage).ConfigureAwait(false);
                 LogHelper.Info($"任务最终状态上报完成，TaskId: {task.TaskId}, 状态: {finalStatus}");
 
-                if(finalStatus == TaskStatus.Completed) 
+                if (finalStatus == TaskStatus.Completed)
                 {
                     var crawlResultMessage = new CrawlerCore.Protos.CrawlResult
                     {
@@ -468,7 +484,7 @@ namespace CrawlerWorker.Services
                             {
                                 var dict = pr.ParsedData.ToDictionary(
                                     kv => kv.Key,
-                                    kv => kv.Value?.ToString() ?? string.Empty);
+                                    kv => ConvertValueForProto(kv.Value));
                                 protoPr.ParsedData.Add(dict);
                             }
 
@@ -477,7 +493,7 @@ namespace CrawlerWorker.Services
                                 protoPr.Links.Add(pr.Links);
                             }
 
-                            crawlResultMessage.PageResults.Add(protoPr);                            
+                            crawlResultMessage.PageResults.Add(protoPr);
                         }
                         fromWorkerMessage = new FromWorker { CrawlResult = crawlResultMessage };
                         await SendMessageAsync(fromWorkerMessage).ConfigureAwait(false);
@@ -904,7 +920,7 @@ namespace CrawlerWorker.Services
             await SendMessageAsync(new FromWorker { TaskProgress = initProgress }).ConfigureAwait(false);
 
             // DEBUG模式进度模拟
-//#if DEBUG
+            //#if DEBUG
             if (_crawlerSettings.EnableProgressSimulation && _globalCts != null)
             {
                 var simulateCts = new CancellationTokenSource();
@@ -933,7 +949,7 @@ namespace CrawlerWorker.Services
                     }
                 }, linkedCts.Token);
             }
-//#endif
+            //#endif
         }
 
         /// <summary>
@@ -1153,5 +1169,14 @@ namespace CrawlerWorker.Services
             Dispose();
         }
         #endregion
+    }
+
+    public static class JsonConfig
+    {
+        public static readonly JsonSerializerOptions Options = new()
+        {
+            WriteIndented = false, // 上报时无需缩进
+            Converters = { new SystemObjectJsonConverter() }
+        };
     }
 }
