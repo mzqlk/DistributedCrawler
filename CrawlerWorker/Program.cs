@@ -34,7 +34,7 @@ try
 
     Log.Information("配置加载完成，开始构建主机");
 
-    // 构建.NET通用主机，完全复用默认配置体系
+    // 构建.NET通用主机
     var host = Host.CreateDefaultBuilder(args)
         .ConfigureHostConfiguration(config =>
         {
@@ -65,7 +65,6 @@ try
                 options.MaxSendMessageSize = context.Configuration.GetValue<int>("GrpcSettings:MaxMessageSizeMb") * 1024 * 1024;
                 options.EnableDetailedErrors = true;
             });
-            //services.AddGrpcWeb();
 
             // 4. 核心业务服务注册
             services.AddSingleton<INodeInfoCollector, NodeInfoCollector>();

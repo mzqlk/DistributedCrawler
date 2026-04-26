@@ -55,7 +55,7 @@ public class GrpcClientAuthenticationInterceptor : Interceptor
         return continuation(newContext);
     }
 
-    // 拦截双向流式调用（节点注册通常用这个）
+    // 拦截双向流式调用
     public override AsyncDuplexStreamingCall<TRequest, TResponse> AsyncDuplexStreamingCall<TRequest, TResponse>(
         ClientInterceptorContext<TRequest, TResponse> context,
         AsyncDuplexStreamingCallContinuation<TRequest, TResponse> continuation)

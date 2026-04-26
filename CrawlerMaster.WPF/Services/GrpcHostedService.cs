@@ -68,13 +68,9 @@ namespace CrawlerMaster.WPF.Services
                 new ChannelOption("grpc.default_compression_level", "balanced")
             };
 
-            // 修复TLS凭证逻辑，正确适配HTTP/HTTPS
             ServerCredentials serverCredentials;
             if (useTls)
             {
-                // 如需TLS加密，在此处替换为你的证书配置
-                // var keyPair = new KeyCertificatePair(File.ReadAllText("server.crt"), File.ReadAllText("server.key"));
-                // serverCredentials = new SslServerCredentials(new List<KeyCertificatePair> { keyPair });
                 serverCredentials = ServerCredentials.Insecure;
                 _logger.LogWarning("当前使用HTTPS端点但未配置TLS证书，已降级为Insecure模式，生产环境请配置正式证书");
             }
@@ -124,7 +120,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 修复端点解析，兼容IPv4/IPv6/域名全格式
+        /// 端点解析方法，支持IPv4、IPv6和域名格式
         /// </summary>
         private (string host, int port, bool useTls) ParseEndpoint(string endpoint)
         {
@@ -182,7 +178,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 修复端口检查，兼容IPv6，避免系统不支持IPv6时启动失败
+        /// 端口检查方法，尝试在指定地址和端口上创建临时监听器以验证端口可用性
         /// </summary>
         private void CheckPortAvailable(string host, int port)
         {

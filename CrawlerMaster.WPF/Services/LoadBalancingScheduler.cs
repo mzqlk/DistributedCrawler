@@ -30,11 +30,11 @@ namespace CrawlerMaster.WPF.Services
             // 1. 执行节点过滤规则
             var qualifiedNodes = availableNodes
                 .Where(node =>
-                    // 规则1：节点必须在线
+                    // 节点必须在线
                     node.Status == NodeStatus.Online &&
-                    // 规则2：CPU使用率 < 50%
+                    // CPU使用率 < 50%
                     node.CpuUsage < 50 &&
-                    // 规则3：内存使用率 < 60%（规避除零异常）
+                    // 内存使用率 < 60%
                     node.TotalMemoryGb > 0 &&
                     CalculateMemoryUsageRate(node) < 0.6)
                 .ToList();
@@ -61,7 +61,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 计算内存使用率（统一单位处理 + 边界值优化）
+        /// 计算内存使用率
         /// </summary>
         private double CalculateMemoryUsageRate(NodeInfo node)
         {
@@ -77,7 +77,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 计算节点综合评分（核心算法）
+        /// 计算节点综合评分
         /// </summary>
         private double CalculateNodeScore(NodeInfo node)
         {

@@ -1,4 +1,3 @@
-# 完全对齐原项目官方Worker Dockerfile规范，.NET 10兼容
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
 WORKDIR /app
 EXPOSE 5002
@@ -26,7 +25,6 @@ FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
 
-# 100%对齐原项目官方环境变量规范，全配置项支持
 ENV MASTER_ENDPOINT="http://master:5001"
 ENV MASTER_NODE_ID=""
 ENV NODE_AUTH_TOKEN="your-node-auth-token-here"

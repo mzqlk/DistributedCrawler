@@ -11,12 +11,11 @@
 
     <UserControl.Resources>
         <ResourceDictionary>
-            <!-- 直接使用项目已有的转换器（不重新定义） -->
             <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
             <converters:GreaterThanConverter x:Key="GreaterThanConverter" />
             <converters:NullToDashConverter x:Key="NullToDashConverter" />
 
-            <!-- 任务状态行样式（使用项目实体） -->
+            <!-- 任务状态行样式 -->
             <Style x:Key="TaskStatusRowStyle" TargetType="DataGridRow">
                 <Style.Triggers>
                     <DataTrigger Binding="{Binding Status}" Value="{x:Static entities:TaskStatus.Pending}">
@@ -81,7 +80,7 @@
                        Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}"/>
             </StackPanel>
 
-            <!-- 空数据占位符（修复：使用DataTrigger实现，避免复杂绑定） -->
+            <!-- 空数据占位符 -->
             <Border Grid.Row="1"
                 Background="#FAFAFA" CornerRadius="8">
                 <Border.Style>
@@ -95,13 +94,12 @@
                     </Style>
                 </Border.Style>
                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                    <!-- 修复：使用存在的MaterialDesign图标 -->
                     <materialDesign:PackIcon Kind="ClipboardTextOff" Width="64" Height="64" Foreground="#9E9E9E"/>
                     <TextBlock Text="暂无任务数据，点击「创建示例任务」添加" Margin="0 16 0 0" FontSize="16" Foreground="#757575" HorizontalAlignment="Center"/>
                 </StackPanel>
             </Border>
 
-            <!-- 任务列表 DataGrid（100% 兼容项目结构） -->
+            <!-- 任务列表 DataGrid -->
             <DataGrid Grid.Row="1"
                   ItemsSource="{Binding TaskList}"
                   RowStyle="{StaticResource TaskStatusRowStyle}"

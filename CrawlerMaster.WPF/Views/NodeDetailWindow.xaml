@@ -217,7 +217,7 @@
                 </StackPanel>
             </Border>
 
-            <!-- 资源趋势图表区域（最终修复版：极简逻辑，直接绑定） -->
+            <!-- 资源趋势图表区域 -->
             <Border Grid.Row="1" Style="{StaticResource DetailCardStyle}" Margin="8 16 8 0">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -231,12 +231,12 @@
 
                     <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="资源使用率趋势" Style="{StaticResource SectionTitleStyle}" />
 
-                    <!-- CPU图表：直接绑定，不做多余的Visibility判断 -->
+                    <!-- CPU图表 -->
                     <Border Grid.Row="1" Grid.Column="0" Margin="8">
                         <oxy:PlotView Model="{Binding CpuPlotModel}" Height="280" />
                     </Border>
 
-                    <!-- 内存图表：直接绑定，不做多余的Visibility判断 -->
+                    <!-- 内存图表 -->
                     <Border Grid.Row="1" Grid.Column="1" Margin="8">
                         <oxy:PlotView Model="{Binding MemoryPlotModel}" Height="280" />
                     </Border>

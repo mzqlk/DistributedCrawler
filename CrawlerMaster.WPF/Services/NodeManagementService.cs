@@ -18,7 +18,7 @@ namespace CrawlerMaster.WPF.Services
     {
         private readonly CrawlerDbContext _dbContext;
         private readonly IEventAggregator _eventAggregator;
-        // 全局并发锁（SQLite 单文件数据库，必须串行写操作）
+        // 全局并发锁
         private static readonly SemaphoreSlim _writeLock = new(1, 1);
 
         public NodeManagementService(CrawlerDbContext dbContext, IEventAggregator eventAggregator)
@@ -28,14 +28,13 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 修复：正确的并发注册，无EF跟踪错误
+        /// 注册节点
         /// </summary>
         public async Task<NodeInfo> RegisterNodeAsync(NodeInfo nodeInfo)
         {
             await _writeLock.WaitAsync();
             try
             {
-                // 1. 查询跟踪实体（修复AsNoTracking导致的更新失败）
                 var existNode = await _dbContext.NodeInfos
                     .FirstOrDefaultAsync(n => n.NodeId == nodeInfo.NodeId);
 
@@ -44,18 +43,15 @@ namespace CrawlerMaster.WPF.Services
 
                 if (existNode != null)
                 {
-                    // 2. 直接更新跟踪的实体（正确写法）
                     oldStatus = existNode.Status;
                     existNode.Status = NodeStatus.Online;
                     existNode.LastHeartbeat = DateTime.UtcNow;
-                    // 补充同步客户端上报的信息
                     existNode.MachineName = nodeInfo.MachineName;
                     existNode.IpAddress = nodeInfo.IpAddress;
                     resultNode = existNode;
                 }
                 else
                 {
-                    // 3. 新增实体
                     oldStatus = NodeStatus.Pending;
                     nodeInfo.Status = NodeStatus.Online;
                     nodeInfo.LastHeartbeat = DateTime.UtcNow;
@@ -63,7 +59,6 @@ namespace CrawlerMaster.WPF.Services
                     resultNode = nodeInfo;
                 }
 
-                // 4. 保存（SQLite无需显式事务，单写操作原子性）
                 await _dbContext.SaveChangesAsync();
 
                 // 发布状态变更事件
@@ -184,7 +179,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 修复：单个节点标记离线（供断流调用，线程安全）
+        /// 标记单个节点为离线
         /// </summary>
         public async Task MarkSingleNodeAsOfflineAsync(string nodeId)
         {

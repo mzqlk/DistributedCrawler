@@ -74,7 +74,7 @@ namespace CrawlerCore.Interfaces
         /// <returns>是否更新成功</returns>
         Task<bool> UpdateTaskAsync(CrawlerTask task);
 
-        #region 爬取结果数据访问扩展
+        #region 爬取结果数据访问
         /// <summary>
         /// 获取所有爬取总结果（含关联的任务信息，按需加载PageResult）
         /// </summary>

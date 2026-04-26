@@ -55,7 +55,7 @@ namespace CrawlerMaster.WPF.ViewModels
         }
         #endregion
 
-        #region TargetNode变更处理（核心修复：强制同步历史数据）
+        #region TargetNode变更处理
         partial void OnTargetNodeChanging(NodeDisplayInfo? oldValue)
         {
             lock (_stateLock)
@@ -87,11 +87,9 @@ namespace CrawlerMaster.WPF.ViewModels
                     newValue.CpuHistory.CollectionChanged += OnDetailCpuHistoryChanged;
                     newValue.MemoryHistory.CollectionChanged += OnDetailMemoryHistoryChanged;
 
-                    // 核心修复1：先创建PlotModel
                     CpuPlotModel = CreateLinePlotModel("CPU使用率(%)", 0, 100, "%");
                     MemoryPlotModel = CreateLinePlotModel("内存占用(MB)", null, null, "MB");
 
-                    // 核心修复2：强制同步已有历史数据
                     ForceRefreshCharts();
                 }
                 else
@@ -101,8 +99,6 @@ namespace CrawlerMaster.WPF.ViewModels
                 }
             }
         }
-
-        // 核心修复3：新增强制刷新图表方法
         private void ForceRefreshCharts()
         {
             if (TargetNode == null) return;
@@ -187,7 +183,7 @@ namespace CrawlerMaster.WPF.ViewModels
         }
         #endregion
 
-        #region PlotModel辅助方法（简化：不再接收初始数据）
+        #region PlotModel辅助方法
         private PlotModel CreateLinePlotModel(string title, double? min, double? max, string unit)
         {
             var model = new PlotModel { Title = title };

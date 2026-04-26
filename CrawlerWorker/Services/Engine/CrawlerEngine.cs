@@ -120,7 +120,7 @@ public sealed class CrawlerEngine
                     int nextDepth = currentDepth + 1;
                     foreach (var subLink in pageResult.Links)
                     {
-                        // 【关键】由插件决定是否跟随此链接
+                        // 由插件决定是否跟随此链接
                         if (!plugin.ShouldFollowLink(subLink, currentDepth))
                         {
                             LogHelper.Debug($"插件 [{plugin.Name}] 拒绝了链接: {subLink}");

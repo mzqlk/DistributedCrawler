@@ -54,8 +54,6 @@ namespace CrawlerCore.Events
                     }
                     catch (Exception ex)
                     {
-                        // 单个处理程序异常不影响其他处理程序
-                        // Core层不依赖外部日志库，仅输出到Debug
                         System.Diagnostics.Debug.WriteLine($"[{nameof(EventAggregator)}] Event handler failed: {ex}");
                     }
                 }

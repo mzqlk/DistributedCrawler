@@ -178,7 +178,7 @@ namespace CrawlerMaster.WPF.ViewModels
         }
         #endregion
 
-        #region 新增功能1：双击查看ParsedData详情
+        #region 双击查看ParsedData详情
         [RelayCommand]
         private void ShowPageDataDetail()
         {
@@ -200,7 +200,7 @@ namespace CrawlerMaster.WPF.ViewModels
         }
         #endregion
 
-        #region 新增功能2：导出JSON数据
+        #region 导出JSON数据
         [RelayCommand]
         private async Task ExportAsync()
         {

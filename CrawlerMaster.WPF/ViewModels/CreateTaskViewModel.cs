@@ -66,11 +66,7 @@ namespace CrawlerMaster.WPF.ViewModels
                                             .ToList(),
                     MaxDepth = MaxDepth,
                     MaxPages = MaxPages,
-                    Priority = Priority,
-                    Configuration = new Dictionary<string, string>
-                    {
-                        { "test", "test" } //预留的任务配置参数，可以根据实际插件需求添加更多配置项
-                    }
+                    Priority = Priority
                 };
 
                 await taskSchedulerService.ScheduleTaskAsync(crawlerTask);

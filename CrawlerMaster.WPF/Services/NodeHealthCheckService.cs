@@ -56,7 +56,7 @@ namespace CrawlerMaster.WPF.Services
             Log.Information("节点健康检查服务已停止");
         }
 
-        // 事件处理程序（轻量级，仅记录日志；耗时操作自行异步）
+        // 事件处理程序
         private void OnNodeStatusChanged(object? sender, NodeStatusChangedEventArgs args)
         {
             // 结构化日志记录所有状态变更
@@ -78,7 +78,7 @@ namespace CrawlerMaster.WPF.Services
         {
             if (_disposed) return;
 
-            // 每次检查创建新的Scoped Scope（符合DI规范）
+            // 每次检查创建新的Scoped Scope
             using var scope = _serviceProvider.CreateScope();
             var nodeService = scope.ServiceProvider.GetRequiredService<INodeManagementService>();
 

@@ -31,7 +31,7 @@ namespace CrawlerMaster.WPF.Services
         private readonly ILoadBalancingScheduler _loadBalancer;
 
         /// <summary>
-        /// 获取当前队列中的任务数量（线程安全）
+        /// 获取当前队列中的任务数量
         /// </summary>
         public int QueueCount
         {
@@ -53,7 +53,7 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 任务入队（带优先级校验，创建Scoped作用域保存数据库）
+        /// 任务入队
         /// </summary>
         /// <param name="task">爬虫任务</param>
         /// <returns>入队结果</returns>
@@ -86,7 +86,7 @@ namespace CrawlerMaster.WPF.Services
                     // 已存在：仅更新状态为 Pending，清空分配节点（故障恢复场景）
                     existingTask.Status = CrawlerCore.Entities.TaskStatus.Pending;
                     existingTask.AssignedNode = string.Empty; // 清空原分配节点
-                    await taskDataService.UpdateTaskAsync(existingTask); // 需在 ITaskDataService 中添加 UpdateTaskAsync 方法
+                    await taskDataService.UpdateTaskAsync(existingTask);
 
                     LogHelper.Info($"已存在任务重新入队：TaskId={task.TaskId}, 状态已重置为Pending");
                 }

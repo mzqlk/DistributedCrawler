@@ -20,21 +20,6 @@ namespace CrawlerMaster.WPF.Views
         public NodeDetailWindow()
         {
             InitializeComponent();
-            this.Loaded += NodeDetailWindow_Loaded;
-        }
-
-        private void NodeDetailWindow_Loaded(object sender, RoutedEventArgs e)
-        {
-            // ========== 调试代码开始 ==========
-            System.Diagnostics.Debug.WriteLine($"=== Window 已加载 ===");
-            System.Diagnostics.Debug.WriteLine($"DataContext 类型: {this.DataContext?.GetType().Name}");
-
-            if (this.DataContext is ViewModels.NodeDetailViewModel vm)
-            {
-                System.Diagnostics.Debug.WriteLine($"ViewModel 中 CpuPlotModel 是否为 null: {vm.CpuPlotModel == null}");
-                System.Diagnostics.Debug.WriteLine($"ViewModel 中 TargetNode 是否为 null: {vm.TargetNode == null}");
-            }
-            // ========== 调试代码结束 ==========
         }
     }
 }

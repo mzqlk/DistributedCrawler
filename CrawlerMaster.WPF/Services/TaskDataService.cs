@@ -95,7 +95,6 @@ namespace CrawlerMaster.WPF.Services
                 return new List<CrawlerTask>();
             }
 
-            // 严格匹配需求：实时查询数据库，确保数据最新
             return await _dbContext.CrawlerTasks
                 .Where(t => t.AssignedNode == nodeId && t.Status == TaskStatus.Running)
                 .AsNoTracking()
@@ -105,7 +104,6 @@ namespace CrawlerMaster.WPF.Services
 
         public async Task<List<CrawlerTask>> BatchResetFailedTasksAsync(List<string> taskIds)
         {
-            // 全参数校验，拦截无效数据
             if (taskIds == null || taskIds.Count == 0)
             {
                 LogHelper.Warn("批量重置故障任务失败，待处理任务ID列表为空");
@@ -119,7 +117,6 @@ namespace CrawlerMaster.WPF.Services
                 return new List<CrawlerTask>();
             }
 
-            // 严格匹配需求：开启数据库事务，保证原子性
             using var transaction = await _dbContext.Database.BeginTransactionAsync().ConfigureAwait(false);
             try
             {

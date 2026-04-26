@@ -15,14 +15,14 @@ namespace CrawlerCore.Entities
         public string TaskId { get; set; } = string.Empty;
 
         /// <summary>
-        /// 任务名称（自定义，如“新闻网站采集”）
+        /// 任务名称（自定义）
         /// </summary>
         public string TaskName { get; set; } = string.Empty;
 
         /// <summary>
         /// 任务起始URL列表（爬取入口）
         /// </summary>
-        public List<string> StartUrls { get; set; } = null!; // 标注非空，构造函数初始化
+        public List<string> StartUrls { get; set; } = null!;
 
         /// <summary>
         /// 任务使用的爬虫插件名称（与ICrawlerPlugin.Name一致）
@@ -30,12 +30,12 @@ namespace CrawlerCore.Entities
         public string PluginName { get; set; } = string.Empty;
 
         /// <summary>
-        /// 任务配置参数（键值对，如选择器、请求延迟）
+        /// 任务配置参数
         /// </summary>
-        public Dictionary<string, string> Configuration { get; set; } = null!; // 标注非空
+        public Dictionary<string, string> Configuration { get; set; } = null!;
 
         /// <summary>
-        /// 最大爬取深度（1=仅爬取起始URL，2=起始URL+子链接，以此类推）
+        /// 最大爬取深度
         /// </summary>
         public int MaxDepth { get; set; } = 1;
 

@@ -123,7 +123,7 @@ namespace CrawlerMaster.WPF.Services
                     "检测到节点离线，启动故障任务恢复流程 | NodeId:{NodeId} 机器名:{MachineName} IP:{IpAddress}",
                     nodeId, args.NodeInfo.MachineName, args.NodeInfo.IpAddress);
 
-                // 创建Scoped作用域，安全获取Scoped生命周期服务（符合DI规范）
+                // 创建Scoped作用域，安全获取Scoped生命周期服务
                 using var scope = _serviceProvider.CreateScope();
                 var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
 
@@ -177,7 +177,6 @@ namespace CrawlerMaster.WPF.Services
                     }
                 }
 
-                // 最终结果日志，全链路可追溯
                 LogHelper.Info(
                     "节点 {NodeId} 故障任务恢复流程完成 | 成功入队 {SuccessCount}/{TotalCount} 个任务",
                     nodeId, requeuedCount, resetTasks.Count);
@@ -196,7 +195,7 @@ namespace CrawlerMaster.WPF.Services
         }
         #endregion
 
-        #region 公开辅助方法（队列操作，线程安全）
+        #region 公开辅助方法
         /// <summary>
         /// 线程安全地从故障队列中取出一个任务ID
         /// </summary>
@@ -217,7 +216,7 @@ namespace CrawlerMaster.WPF.Services
         }
         #endregion
 
-        #region 过期条目清理（防止内存泄漏，线程安全）
+        #region 过期条目清理
         /// <summary>
         /// 定时清理过期的节点处理记录，避免字典无限膨胀
         /// </summary>
@@ -255,7 +254,7 @@ namespace CrawlerMaster.WPF.Services
         }
         #endregion
 
-        #region IDisposable 标准实现（规范完整，无内存泄漏、无重复释放）
+        #region IDisposable 标准实现
         public void Dispose()
         {
             Dispose(true);

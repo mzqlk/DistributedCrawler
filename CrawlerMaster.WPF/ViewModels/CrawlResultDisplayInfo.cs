@@ -7,7 +7,7 @@ using System.Collections.Generic;
 namespace CrawlerMaster.WPF.ViewModels
 {
     /// <summary>
-    /// 爬取总结果UI展示模型，对齐项目现有DisplayInfo规范
+    /// 爬取总结果UI展示模型
     /// </summary>
     public class CrawlResultDisplayInfo
     {
@@ -37,7 +37,7 @@ namespace CrawlerMaster.WPF.ViewModels
         public DateTime? CompletedAt { get; set; }
 
         /// <summary>
-        /// 原始实体（按需使用）
+        /// 原始实体
         /// </summary>
         public CrawlResult RawEntity { get; set; } = null!;
 

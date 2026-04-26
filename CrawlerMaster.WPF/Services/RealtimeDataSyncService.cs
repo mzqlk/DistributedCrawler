@@ -175,7 +175,7 @@ namespace CrawlerMaster.WPF.Services
         }
         #endregion
 
-        #region 事件处理方法（修复空校验+Channel异常隔离）
+        #region 事件处理方法
         private void OnNodeStatusChanged(object? sender, NodeStatusChangedEventArgs args)
         {
             if (_isStopped || args == null || string.IsNullOrWhiteSpace(args.NodeId) || args.NodeInfo == null)
@@ -259,7 +259,6 @@ namespace CrawlerMaster.WPF.Services
                 var throttleInterval = TimeSpan.FromSeconds(_signalRSettings.NodeUpdateThrottleSeconds);
                 var shouldPush = false;
 
-                // 原子操作更新推送时间，线程安全
                 _nodeLastPushTime.AddOrUpdate(
                     args.NodeId,
                     now,
@@ -276,7 +275,6 @@ namespace CrawlerMaster.WPF.Services
 
                 if (!shouldPush) return;
 
-                // 数值兜底，避免负数导致UI异常
                 var message = new NodeUpdateMessage
                 {
                     NodeId = args.NodeId,

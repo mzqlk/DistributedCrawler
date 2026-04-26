@@ -44,7 +44,7 @@ public class GrpcWorkerServiceFactory : IGrpcWorkerServiceFactory
     }
 
     /// <summary>
-    /// 创建Worker gRPC服务端实例，与Master端配置100%对齐
+    /// 创建Worker gRPC服务端实例
     /// </summary>
     public Server CreateWorkerServer()
     {

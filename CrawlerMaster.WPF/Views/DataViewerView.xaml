@@ -40,7 +40,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- 1. 搜索筛选栏（新增导出按钮） -->
+        <!-- 1. 搜索筛选栏 -->
         <DockPanel Grid.Row="0" Margin="0 0 0 12">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                 <materialDesign:Card Padding="0" Margin="0 0 8 0">
@@ -56,7 +56,6 @@
                         Style="{StaticResource MaterialDesignRaisedButton}" Margin="0 0 8 0"/>
                 <Button Content="刷新列表" Command="{Binding LoadCrawlResultsCommand}"
                         Style="{StaticResource MaterialDesignOutlinedButton}" Margin="0 0 8 0"/>
-                <!-- 新增导出按钮 -->
                 <Button Content="导出" Command="{Binding ExportCommand}"
                         Style="{StaticResource MaterialDesignOutlinedButton}"/>
             </StackPanel>
@@ -134,7 +133,7 @@
 
         <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" Height="4" Background="#E0E0E0"/>
 
-        <!-- 4. 子列表：PageResult 单页爬取结果（新增选中项绑定+双击事件） -->
+        <!-- 4. 子列表：PageResult 单页爬取结果 -->
         <DataGrid Grid.Row="3"
                   x:Name="PageResultDataGrid"
                   ItemsSource="{Binding CurrentPageResults}"

@@ -76,7 +76,7 @@
             </StackPanel>
         </Border>
 
-        <!-- 节点列表DataGrid（修复双击事件，避免重复触发） -->
+        <!-- 节点列表DataGrid -->
         <DataGrid Grid.Row="0"
           x:Name="NodeDataGrid"
           ItemsSource="{Binding Nodes}"
@@ -98,7 +98,6 @@
           materialDesign:DataGridAssist.ColumnHeaderPadding="20,4,0,4"
           ColumnHeaderHeight="36">
 
-            <!-- 修复双击事件：仅触发行的双击，避免单元格冒泡重复触发 -->
             <i:Interaction.Triggers>
                 <i:EventTrigger EventName="MouseDoubleClick" SourceName="NodeDataGrid">
                     <i:InvokeCommandAction Command="{Binding OpenDetailCommand}" 
@@ -120,7 +119,7 @@
             </DataGrid.Columns>
         </DataGrid>
 
-        <!-- 资源趋势图表区域（修复：绑定ViewModel独立的PlotModel） -->
+        <!-- 资源趋势图表区域 -->
         <Border Grid.Row="1"
                 Visibility="{Binding SelectedNode, Converter={StaticResource NullToVisConverter}}"
                 Background="White" CornerRadius="8" Padding="16">

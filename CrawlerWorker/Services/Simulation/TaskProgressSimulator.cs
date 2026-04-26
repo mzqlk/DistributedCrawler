@@ -10,7 +10,7 @@ namespace CrawlerWorker.Services.Simulation
     /// <summary>
     /// 任务进度模拟器（仅DEBUG生效）
     /// </summary>
-//#if DEBUG
+#if DEBUG
     public static class TaskProgressSimulator
     {
         private static readonly Random _random = new();
@@ -102,5 +102,5 @@ namespace CrawlerWorker.Services.Simulation
             }
         }
     }
-//#endif
+#endif
 }

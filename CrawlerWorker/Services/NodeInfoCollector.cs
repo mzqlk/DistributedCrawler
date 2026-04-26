@@ -249,7 +249,7 @@ namespace CrawlerWorker.Services
         {
             try
             {
-                // 策略1：通过 Master 端点获取出口 IP
+                // 通过 Master 端点获取出口 IP
                 var masterEndpoint = Environment.GetEnvironmentVariable("MASTER_ENDPOINT") ?? "http://localhost:5001";
                 var masterUri = new Uri(masterEndpoint);
 
@@ -271,7 +271,7 @@ namespace CrawlerWorker.Services
 
             try
             {
-                // 策略2：获取第一个非环回 IPv4 地址
+                // 获取第一个非环回 IPv4 地址
                 var hostEntry = await Dns.GetHostEntryAsync(Dns.GetHostName(), AddressFamily.InterNetwork, cancellationToken).ConfigureAwait(false);
                 var ipAddressFallback = hostEntry.AddressList
                     .FirstOrDefault(ip => !IPAddress.IsLoopback(ip))?.ToString();
@@ -373,7 +373,7 @@ namespace CrawlerWorker.Services
                     }
                 }
 
-                // 采样计算 (线程安全)
+                // 采样计算
                 lock (_cpuLock)
                 {
                     if (_isFirstCpuSample)

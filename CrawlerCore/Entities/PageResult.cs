@@ -23,12 +23,12 @@ namespace CrawlerCore.Entities
         public string FinalUrl { get; set; } = string.Empty;
 
         /// <summary>
-        /// HTTP响应状态码（如200/404/500）
+        /// HTTP响应状态码
         /// </summary>
         public int StatusCode { get; set; }
 
         /// <summary>
-        /// 页面解析后的数据（键值对，如标题、内容、发布时间）
+        /// 页面解析后的数据
         /// </summary>
         public Dictionary<string, object> ParsedData { get; set; }
 

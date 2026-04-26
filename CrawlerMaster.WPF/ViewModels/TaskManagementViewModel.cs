@@ -55,11 +55,11 @@ namespace CrawlerMaster.WPF.ViewModels
                     taskInfo.CompletedPages = e.CrawledPages;
                     taskInfo.TotalPages = e.TotalPages;
                     taskInfo.AssignedNode = e.AssignedNodeId;
-                    taskInfo.TaskName = e.TaskName; // 任务名称也可能变更（例如重命名）
+                    taskInfo.TaskName = e.TaskName;
                 }
                 else
                 {
-                    // 如果列表中不存在该任务，则作为新任务添加（例如任务刚创建但尚未加载到列表）
+                    // 如果列表中不存在该任务，则作为新任务添加
                     TaskList.Add(new TaskDisplayInfo
                     {
                         TaskId = e.TaskId,
@@ -72,48 +72,6 @@ namespace CrawlerMaster.WPF.ViewModels
                 }
             });
         }
-
-        //[RelayCommand(CanExecute = nameof(CanExecuteCommands))]
-        //private async Task CreateSampleTaskAsync()
-        //{
-        //    if (IsLoading) return;
-        //    IsLoading = true;
-
-        //    try
-        //    {
-        //        using var scope = _serviceProvider.CreateScope();
-        //        var taskSchedulerService = scope.ServiceProvider.GetRequiredService<ITaskSchedulerService>();
-
-        //        var sampleTask = new CrawlerTask
-        //        {
-        //            TaskName = $"示例爬虫任务_{DateTime.Now:HHmmss}",
-        //            PluginName = "MockTestPlugin",
-        //            StartUrls = new List<string> { "https://example.com" },
-        //            MaxDepth = 2,
-        //            MaxPages = 50,
-        //            Priority = 3,
-        //            Configuration = new Dictionary<string, string>
-        //            {
-        //                { "RequestDelay", "1000" },
-        //                { "UserAgent", "Mozilla/5.0" }
-        //            }
-        //        };
-
-        //        await taskSchedulerService.ScheduleTaskAsync(sampleTask);
-        //        CrawlerCore.Infrastructure.LogHelper.Info($"示例任务创建成功：{sampleTask.TaskId}");
-
-        //        // 刷新列表（事件也会自动更新，此处保留以确保同步）
-        //        await LoadTaskListAsync();
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        CrawlerCore.Infrastructure.LogHelper.Error(ex, "创建示例任务失败");
-        //    }
-        //    finally
-        //    {
-        //        IsLoading = false;
-        //    }
-        //}
 
         [RelayCommand]
         private async Task ShowCreateTaskDialog()

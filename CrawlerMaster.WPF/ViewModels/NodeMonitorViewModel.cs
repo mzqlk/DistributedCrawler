@@ -19,7 +19,7 @@ using System.Windows.Threading;
 namespace CrawlerMaster.WPF.ViewModels
 {
     /// <summary>
-    /// 节点监控视图模型（修复版：独立PlotModel）
+    /// 节点监控视图模型
     /// </summary>
     public class NodeMonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
@@ -34,7 +34,7 @@ namespace CrawlerMaster.WPF.ViewModels
         private volatile bool _isDisposing;
         #endregion
 
-        #region 列表页独立的PlotModel（不与详情页共用）
+        #region 列表页独立的PlotModel
         private PlotModel? _cpuPlotModel;
         public PlotModel? CpuPlotModel
         {
@@ -381,7 +381,7 @@ namespace CrawlerMaster.WPF.ViewModels
         }
         #endregion
 
-        #region 命令执行逻辑（修复重复触发）
+        #region 命令执行逻辑
         private bool CanExecuteOpenDetailCommand(NodeDisplayInfo? node)
         {
             return !_isDisposed && !_isDisposing && node != null;

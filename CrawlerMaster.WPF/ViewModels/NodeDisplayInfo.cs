@@ -7,7 +7,7 @@ using System.Runtime.CompilerServices;
 namespace CrawlerMaster.WPF.ViewModels
 {
     /// <summary>
-    /// 节点显示信息类（重构版：剥离PlotModel，仅保留纯数据）
+    /// 节点显示信息类
     /// </summary>
     public class NodeDisplayInfo : INotifyPropertyChanged
     {
@@ -23,7 +23,7 @@ namespace CrawlerMaster.WPF.ViewModels
         private int _activeTasks;
         private DateTime _lastHeartbeat;
 
-        #region 历史数据配置（纯数据，无视图绑定）
+        #region 历史数据配置
         private const int MaxHistoryPoints = 60;
         private readonly object _historyLock = new();
         // 仅保留历史数据集合，PlotModel由各视图独立创建
@@ -107,7 +107,7 @@ namespace CrawlerMaster.WPF.ViewModels
         }
         #endregion
 
-        #region 历史数据操作（线程安全）
+        #region 历史数据操作
         /// <summary>
         /// 初始化历史数据
         /// </summary>
