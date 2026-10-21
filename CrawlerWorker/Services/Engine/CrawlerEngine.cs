@@ -16,7 +16,7 @@ namespace CrawlerWorker.Services.Engine;
 /// <summary>
 /// Worker爬虫执行引擎
 /// </summary>
-public sealed class CrawlerEngine
+public class CrawlerEngine : ICrawlerEngine
 {
     #region 常量与依赖注入
     private const int MaxUrlHashSetCapacity = 100000;

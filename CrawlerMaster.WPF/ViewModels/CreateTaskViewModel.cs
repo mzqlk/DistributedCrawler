@@ -20,11 +20,11 @@ namespace CrawlerMaster.WPF.ViewModels
 
         [ObservableProperty]
         [Required(ErrorMessage = "插件名称不能为空")]
-        private string _pluginName = "MockTestPlugin";
+        private string _pluginName = "ArXivThesisPlugin";
 
         [ObservableProperty]
         [Required(ErrorMessage = "起始URL不能为空")]
-        private string _startUrlsText = "https://example.com";
+        private string _startUrlsText = "https://arxiv.org/search/?query=machine+learning&searchtype=all&size=50&start=0";
 
         [ObservableProperty]
         [Range(1, 10, ErrorMessage = "最大深度必须在1-10之间")]

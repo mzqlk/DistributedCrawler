@@ -28,7 +28,9 @@ public class CrawlerEngineCompleteTests
     {
         // 设置 HttpClient 工厂 Mock
         var client = new HttpClient(_httpHandlerMock.Object);
-        _httpFactoryMock.Setup(f => f.CreateClient("CrawlerEngineClient")).Returns(client);
+        _httpFactoryMock
+            .Setup(f => f.CreateClient("CrawlerEngineClient"))
+            .Returns(() => new HttpClient(_httpHandlerMock.Object));
 
         // 创建引擎实例
         _engine = new CrawlerEngine(_httpFactoryMock.Object, _pluginManagerMock.Object, _settings);
@@ -56,6 +58,9 @@ public class CrawlerEngineCompleteTests
         pluginMock.Setup(p => p.GetDefaultConfiguration()).Returns(new Dictionary<string, string>());
         pluginMock.Setup(p => p.ExecuteAsync(It.IsAny<PluginContext>()))
             .ReturnsAsync(new PluginResult { Success = true, Data = new Dictionary<string, object> { { "test", "value" } } });
+
+        pluginMock.Setup(p => p.ShouldFollowLink(It.IsAny<string>(), It.IsAny<int>()))
+            .Returns(true);
 
         _pluginManagerMock.Setup(p => p.GetPlugin(pluginName)).Returns(pluginMock.Object);
         return pluginMock;
@@ -440,10 +445,12 @@ public class CrawlerEngineCompleteTests
 
         // 4. 注入依赖
         var client = new HttpClient(httpHandlerMock.Object);
-        httpFactoryMock.Setup(x => x.CreateClient("CrawlerEngineClient")).Returns(client);
+        httpFactoryMock.Setup(x => x.CreateClient("CrawlerEngineClient"))
+            .Returns(() => new HttpClient(httpHandlerMock.Object));
 
         // 5. Mock插件
         var pluginMock = new Mock<ICrawlerPlugin>();
+        pluginMock.Setup(p => p.ShouldFollowLink(It.IsAny<string>(), It.IsAny<int>())).Returns(true);
         pluginMock.Setup(p => p.Name).Returns("MockPlugin");
         pluginMock.Setup(p => p.ExecuteAsync(It.IsAny<PluginContext>()))
             .ReturnsAsync(new PluginResult { Success = true, Data = new Dictionary<string, object>() });

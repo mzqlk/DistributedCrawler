@@ -20,7 +20,7 @@ namespace CrawlerWorker.Tests.Services
         private readonly IOptions<GrpcSettings> _grpcSettingsOptions;
         private readonly IOptions<CrawlerSettings> _crawlerSettingsOptions;
         private readonly IOptions<SignalRSettings> _signalRSettingsOptions;
-        private readonly Mock<CrawlerEngine> _mockCrawlerEngine;
+        private readonly Mock<ICrawlerEngine> _mockCrawlerEngine;
         private readonly TestableWorkerHostedService _service;
 
         // 派生类，暴露受保护/私有方法
@@ -34,7 +34,7 @@ namespace CrawlerWorker.Tests.Services
                 IOptions<CrawlerSettings> crawlerSettings,
                 IOptions<SignalRSettings> signalRSettings,
                 IHostApplicationLifetime appLifetime,
-                CrawlerEngine crawlerEngine)
+                ICrawlerEngine crawlerEngine)
                 : base(grpcClientManager, nodeInfoCollector, sessionManager, grpcSettings, crawlerSettings, signalRSettings, appLifetime, crawlerEngine)
             {
             }
@@ -70,7 +70,7 @@ namespace CrawlerWorker.Tests.Services
                 // 如有必要，初始化属性
             };
             _signalRSettingsOptions = Options.Create(signalRSettings);
-            _mockCrawlerEngine = new Mock<CrawlerEngine>();
+            _mockCrawlerEngine = new Mock<ICrawlerEngine>();
 
             _service = new TestableWorkerHostedService(
                 _mockGrpcClientManager.Object,

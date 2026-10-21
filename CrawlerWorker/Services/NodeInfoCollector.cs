@@ -19,6 +19,7 @@ namespace CrawlerWorker.Services
     public class NodeInfoCollector : INodeInfoCollector
     {
         private readonly ILogger<NodeInfoCollector> _logger;
+        private readonly IWorkerSessionManager _sessionManager;
         private readonly string _nodeId;
 
         // CPU 采样状态
@@ -33,9 +34,10 @@ namespace CrawlerWorker.Services
         private const int MaxNodeIdLength = 128;
         private static readonly Regex NodeIdValidCharRegex = new(@"[^a-zA-Z0-9_\-]", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
 
-        public NodeInfoCollector(ILogger<NodeInfoCollector> logger)
+        public NodeInfoCollector(ILogger<NodeInfoCollector> logger, IWorkerSessionManager sessionManager)
         {
             _logger = logger;
+            _sessionManager = sessionManager;
             _nodeId = GenerateNormalizedNodeId();
         }
 
@@ -78,7 +80,7 @@ namespace CrawlerWorker.Services
                 CpuUsage = Math.Round(await GetSystemCpuUsageAsync().ConfigureAwait(false), 2),
                 MemoryUsageMb = Math.Round(await GetSystemMemoryUsageMbAsync(cancellationToken).ConfigureAwait(false), 2),
                 DiskUsagePercent = Math.Round(GetDiskUsagePercent(), 2),
-                ActiveTasks = 0, // 可由外部更新
+                ActiveTasks = _sessionManager.ActiveTaskCount,
                 Timestamp = Timestamp.FromDateTime(utcNow)
             };
 

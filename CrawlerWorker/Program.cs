@@ -86,7 +86,7 @@ try
         client.Timeout = TimeSpan.FromSeconds(30);
     });
             services.AddSingleton<IPluginManager, PluginManager>();
-            services.AddSingleton<CrawlerEngine>();
+            services.AddSingleton<ICrawlerEngine, CrawlerEngine>();
         })
         .Build();
 

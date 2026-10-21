@@ -36,7 +36,7 @@ namespace CrawlerWorker.Services
         private readonly CrawlerSettings _crawlerSettings;
         private readonly SignalRSettings _signalRSettings;
         private readonly IHostApplicationLifetime _appLifetime;
-        private readonly CrawlerEngine _crawlerEngine;
+        private readonly ICrawlerEngine _crawlerEngine;
         #endregion
 
         #region 线程安全与并发控制字段
@@ -119,7 +119,7 @@ namespace CrawlerWorker.Services
             IOptions<CrawlerSettings> crawlerSettings,
             IOptions<SignalRSettings> signalRSettings,
             IHostApplicationLifetime appLifetime,
-            CrawlerEngine crawlerEngine)
+            ICrawlerEngine crawlerEngine)
         {
             _grpcClientManager = grpcClientManager ?? throw new ArgumentNullException(nameof(grpcClientManager));
             _nodeInfoCollector = nodeInfoCollector ?? throw new ArgumentNullException(nameof(nodeInfoCollector));
