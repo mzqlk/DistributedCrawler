@@ -19,12 +19,31 @@ Master-Worker 主从架构（图 [3-1](../thesis/figures/fig3-1.png)、数据流
 ### 2.1 节点注册与建流（时序图 [3-3](../thesis/figures/fig3-3.png)）
 1. Worker 启动 → `NodeInfoCollector` 采集静态信息（CPU 核数、总内存、IP、机器名）。
 2. Master 端口连通性预检 → `RegisterNode`（带 Token，10s Deadline，失败按配置重试）。
-3. Master `GrpcAuthenticationInterceptor` 校验 Token → 校验 NodeId 唯一 → 生成 SessionId → 返回 `RegistrationResponse{session_id, system_config}` → 发布节点注册事件。
-4. Worker 携带 `node-id` + `session-id` 头调用 `StartStreaming`；Master 校验会话后绑定流上下文。
+3. Master `GrpcAuthenticationInterceptor`（在 `AddGrpc` 的拦截器列表中，对两个 RPC 都生效）校验 Token：Master 未配置可用令牌（为空或为公开的 `test-token`）时拒绝所有节点；令牌错误返回 `Unauthenticated`。业务代码抛出的 `RpcException` 原样透传，其他异常只返回固定文本 `Internal server error`。
+   → 该 NodeId **仍有活跃流**时拒绝（防止两个 NodeId 相同的 Worker 互相踢下线），否则创建或替换会话（旧会话随即失效，崩溃重启的 Worker 可以立即重新注册）→ 记下注册时声明的 `max_concurrent_tasks` → 持久化节点 → 返回 `RegistrationResponse{session_id, system_config}`。
+4. Worker 携带 `node-id` + `session-id` 头调用 `StartStreaming`；Master 校验会话后登记流上下文。同一会话已有旧流时，以新流为准并关闭旧流（旧流多半是半开连接）。流断开时**不删除会话**，Worker 短暂断线后可以用旧会话重连；会话超过 30 分钟不活跃且没有活跃流时才由 `SessionManager`（托管服务）清理。
 5. Worker 按 `HeartbeatIntervalSeconds`(5s) 上报心跳。
 
 ### 2.2 任务执行
-UI 创建任务（名称、插件、起始 URL、MaxDepth、MaxPages、优先级 1–5）→ `TaskSchedulerHostedService` 入 `PriorityQueue` → `LoadBalancingScheduler.SelectOptimalNode` → 通过双向流发 `FromMaster.NewTask` → Worker 回 `TaskProgress(Running)` → `CrawlerEngine` 执行并按页上报进度 → `CrawlResult` 回传 → Master 落库、状态 Completed。
+UI 创建任务（名称、插件、起始 URL、MaxDepth、MaxPages、优先级 1–5）→ `TaskSchedulerHostedService` 入 `PriorityQueue` → 出队后确认任务仍为 Pending → 候选节点为库中 Online 且**当前有活跃流**的节点 → `LoadBalancingScheduler` 选节点 → **先把任务写为“Running + 节点”并通知界面，再**通过双向流发 `FromMaster.NewTask`（下发失败则撤销，换下一个节点）→ Worker 回 `TaskProgress(Running)` → `CrawlerEngine` 执行并按页上报进度 → Worker 发 Completed 进度（库中仍为 Running）→ `CrawlResult` 回传 → Master 在**同一事务**中写入结果并把任务改为 Completed → 回 `FromMaster.ResultAck`。
+
+### 2.2.1 任务状态机（`Services/TaskDataService.cs`，T4）
+
+任务状态的所有写入都集中在 `TaskDataService`，用带条件的 `ExecuteUpdate` 实现，条件就是“允许的来源状态”，并发下也是原子的：
+
+| 转换 | 触发 | 条件 |
+|---|---|---|
+| Pending → Running + 节点 | 调度器下发前（`TryMarkTaskDispatchedAsync`） | 仍为 Pending |
+| Running + 节点 → Pending | 下发失败撤销（`RevertTaskDispatchAsync`） | 仍为 Running 且是该节点 |
+| Pending（未分配）→ Running + 节点 | 被重置的任务，原节点重连后继续上报进度（**认领**），调度器出队时发现已不是 Pending 就不再下发 | 未分配或分配给该节点 |
+| Running → Failed | 当前执行节点上报 Failed | Running 且是该节点 |
+| Pending/Running/Failed → Completed | 结果落库（`SaveCrawlResultAsync`，与写入结果同一事务） | 该任务还没有结果，且未分配给其他节点 |
+| Pending/Running → Failed | 结果落库失败（`MarkTaskFailedAsync`） | 未分配给其他节点 |
+| Pending/Running + 节点 → Pending（未分配） | 节点离线的故障恢复（`ResetUnfinishedTasksOfNodeAsync`）、Master 重启恢复（`ResetTasksForStartupRecoveryAsync`） | 见 §5 |
+
+其余情况一律忽略：终态不回退；Worker 本地排队时上报的 Pending 不覆盖 Running；任务已分配给其他节点时，该节点（被隔离的旧节点）的进度与结果都丢弃；未知任务的进度与结果丢弃。只有生效的变化才发布 `TaskProgressUpdatedEventArgs`。
+
+结果去重：`CrawlResults.TaskId` 有唯一索引，写入前也检查；重复结果丢弃。结果回执 `ResultAck.accepted`：已落库（包括此前已落库的重复结果）为 true，被丢弃为 false，落库失败不回执（Worker 侧的发件箱与重发在 T5 实现）。
 
 ### 2.3 状态同步
 心跳 → Master 更新 `LastHeartbeat` 与资源数据 → 发布 `NodeStatusChangedEventArgs` → `RealtimeDataSyncService` 节流后经 SignalR 推送 → ViewModel 用 Dispatcher 更新 `ObservableCollection`。
@@ -37,7 +56,7 @@ UI 创建任务（名称、插件、起始 URL、MaxDepth、MaxPages、优先级
 
 | 消息 | 关键字段 | 方向/用途 |
 |---|---|---|
-| `NodeRegistration` | node_id, machine_name, cpu_cores, total_memory_gb, ip_address | W→M 注册 |
+| `NodeRegistration` | node_id, machine_name, cpu_cores, total_memory_gb, ip_address, max_concurrent_tasks（6，T4 追加；0 表示不限） | W→M 注册 |
 | `RegistrationResponse` | success, session_id, message, system_config | M→W |
 | `SystemConfig` | heartbeat_interval_seconds, max_retry_attempts, retry_delay_milliseconds | 系统参数 |
 | `Heartbeat` | node_id, cpu_usage, memory_usage_mb, disk_usage_percent, active_tasks, timestamp | W→M |
@@ -48,9 +67,10 @@ UI 创建任务（名称、插件、起始 URL、MaxDepth、MaxPages、优先级
 | `LogEntry` | node_id, task_id, log_level, message, exception_detail, timestamp | W→M |
 | `TaskControl` | task_id, command(Start/Pause/Stop/Cancel), reason | M→W |
 | `FromWorker` | oneof heartbeat / log_entry / crawl_result / task_progress | 封装 |
-| `FromMaster` | oneof new_task / task_control / system_config | 封装 |
+| `ResultAck` | task_id, accepted（T4 新增） | M→W 结果回执：结果已落库（true）或被丢弃（false），Worker 收到后不必重发 |
+| `FromMaster` | oneof new_task / task_control / system_config / result_ack（4，T4 追加） | 封装 |
 
-开发计划规定 proto 定稿后**不得私自修改字段**，变更需评审。Worker 另有 `CrawlerWorker/Protos/worker_control.proto`（`GetWorkerStatus`、`ExecuteTaskCommand`，目前抛 `NotImplementedException`）。
+开发计划规定 proto 定稿后**不得私自修改字段**，变更需评审。路线图规定只做向后兼容的扩展（在消息或 oneof 末尾追加），并同步更新 `ProtoContractTests`。Worker 另有 `CrawlerWorker/Protos/worker_control.proto`（`GetWorkerStatus`、`ExecuteTaskCommand`，目前抛 `NotImplementedException`）。
 
 ## 4. 双向流可靠性（论文 4.1.3.2、5.1.2；图 [4-9](../thesis/figures/fig4-9.png) [4-10](../thesis/figures/fig4-10.png) [5-2](../thesis/figures/fig5-2.png)）
 
@@ -59,21 +79,28 @@ UI 创建任务（名称、插件、起始 URL、MaxDepth、MaxPages、优先级
 - 重连状态机：Disconnected →（计数+1，固定延迟 `RetryDelayMilliseconds`）Reconnecting → Connected；超过 `MaxRetryAttempts` → 清空会话、Registering（重新注册）→ Connected。
 - 生命周期由 `CancellationTokenSource` 联动；`CleanupStreamResourcesAsync` 等待发送队列清空（超时 `GrpcConstants.DefaultStreamCloseTimeoutMs`）后关闭。
 
+Master 侧（`CrawlerCoordinatorService.StartStreaming`，T4）：
+
+- 每条流一个链接到调用取消令牌的 CTS。读循环、写循环任一结束（客户端断开、写入失败、读到超限消息、被健康检查断开），立即取消另一个并返回，不会挂起。
+- 流上下文按 NodeId 登记。同一会话的新流替换旧流；清理只执行一次，并且只在字典里登记的仍是这条流时才移除它、把节点标为离线，被替换的旧流不影响新流。
+- 发现半开连接：Kestrel 开启 HTTP/2 keepalive（`GrpcSettings:KeepAlivePingDelaySeconds`/`KeepAlivePingTimeoutSeconds`，默认 15/30 秒）；健康检查判离线后调用 `DisconnectNode` 主动关闭该节点的流，节点恢复后可以重新建流。
+- 节点状态事件只由 `NodeManagementService` 在库中状态变化、保存之后发布，协调服务不再自己发布。
+
 ## 5. Master 服务
 
 | 服务 | 文件 | 要点 |
 |---|---|---|
 | 节点管理 | `Services/NodeManagementService.cs`（`INodeManagementService`） | 注册、心跳更新、标记离线；节点状态 Pending→Online→Offline（图 [4-2](../thesis/figures/fig4-2.png)） |
-| 健康检查 | `Services/NodeHealthCheckService.cs` | 默认每 15s 检查，1 分钟无心跳→Offline（`HealthCheckSettings:CheckIntervalSeconds` / `NodeTimeoutSeconds`），每次检查独立 DI 作用域 |
-| 会话 | `Services/SessionManager.cs` | `ConcurrentDictionary` 存 NodeId↔SessionId↔流 |
-| 调度 | `Services/TaskSchedulerHostedService.cs`（`ITaskSchedulerService`） | `PriorityQueue`；启动时 `RecoverPendingTasksFromDatabaseAsync` 按创建时间恢复 Pending 任务；任务状态 Pending→Running→Completed/Failed（图 [4-4](../thesis/figures/fig4-4.png)） |
-| 负载均衡 | `Services/LoadBalancingScheduler.cs` | 过滤：Online 且 CPU<50% 且内存使用率<60%；无可用节点返回 null，任务留队列；评分见 overview §5 |
-| 故障恢复 | `Services/FailedTaskRecoveryService.cs` | 订阅 Offline 事件；`_processingNodes` 同节点处理锁 + 30s 内重复离线忽略；`BatchResetFailedTasksAsync` 事务内 Running→Pending 并清空 AssignedNode；按原优先级重新入队；每 5 分钟清理过期记录（时序图 [4-6](../thesis/figures/fig4-6.png)） |
+| 健康检查 | `Services/NodeHealthCheckService.cs` | 默认每 15s 检查，1 分钟无心跳→Offline（`HealthCheckSettings:CheckIntervalSeconds` / `NodeTimeoutSeconds`），每次检查独立 DI 作用域，检查不重叠执行；判离线的节点随即被断开双向流 |
+| 会话 | `Services/SessionManager.cs` | `ConcurrentDictionary` 存 NodeId↔SessionId 与注册时声明的并发上限；同时是托管服务，定期清理过期且没有活跃流的会话。流上下文由协调服务管理 |
+| 调度 | `Services/TaskSchedulerHostedService.cs`（`ITaskSchedulerService`） | `PriorityQueue`；每次分配的结论为已分配/无可用节点/下发失败/不可调度，只有中间两种重新入队，分配中出异常也重新入队；状态机见 §2.2.1；启动时 `RecoverPendingTasksFromDatabaseAsync` 在库中重置并恢复所有 Pending 与执行节点不在线的 Running 任务（图 [4-4](../thesis/figures/fig4-4.png)） |
+| 负载均衡 | `Services/LoadBalancingScheduler.cs` | 只考虑在线且有活跃流的节点；任务数已达节点并发上限的不分配；资源阈值 `LoadBalancingSettings`（默认 CPU、内存都 <90%）满足的节点优先，都不满足时退而选择负载最低的；先按已分配且未结束的任务数从少到多，再按得分（见 overview §5）；没有可用节点时返回 null，任务留在队列 |
+| 故障恢复 | `Services/FailedTaskRecoveryService.cs` | 订阅 Offline 事件；同一节点的事件用一把 `SemaphoreSlim` 依次处理（等待而不是跳过）；`ResetUnfinishedTasksOfNodeAsync` 在事务内把分配给该节点的 Pending 与 Running 重置为“Pending + 未分配”（幂等）；通知界面并按原优先级重新入队（时序图 [4-6](../thesis/figures/fig4-6.png)） |
 | 实时推送 | `Services/RealtimeDataSyncService.cs` + `Hubs/CrawlerHub.cs` | `Channel<Func<IHubContext,Task>>` 缓冲；`ConcurrentDictionary<string,DateTime>` 节流：节点 5s、任务进度 2s（`SignalRSettings`） |
 | 数据访问 | `Services/TaskDataService.cs`（`ITaskDataService`） | 大量 `AsNoTracking()`；`GetPagedCrawlResultProjectionsAsync` 用 Join/GroupJoin 返回 `CrawlResultProjection`（含 TaskName、页数），支持 TaskId/TaskName 模糊搜索 |
 
 ### 数据库（`Data/CrawlerDbContext.cs`，SQLite `crawler.db`）
-表 `NodeInfos`、`CrawlerTasks`、`CrawlResults`、`PageResults`。`CrawlerTasks.AssignedNode`、`Status` 建索引；`Url/FinalUrl` 最大 2048；JSON 集合列自定义 `ValueComparer`；`CrawlResult`→`PageResult` 级联删除。启动时若缺表则 `EnsureDeleted + EnsureCreated` 重建（不用迁移）。
+表 `NodeInfos`、`CrawlerTasks`、`CrawlResults`、`PageResults`。`CrawlerTasks.AssignedNode`、`Status` 建索引；`CrawlResults.TaskId` 唯一索引（每个任务只有一份结果，T4）；`Url/FinalUrl` 最大 2048；JSON 集合列自定义 `ValueComparer`；`CrawlResult`→`PageResult` 级联删除。数据库文件的相对路径相对于程序所在目录。启动时按实体模型逐表逐列检查（不检查索引）：结构一致直接使用；结构不符或无法读取时，库中有数据先备份为 `crawler.db.bak-yyyyMMddTHHmmssZ` 再 `EnsureDeleted + EnsureCreated` 重建，并在界面提示备份位置（不用迁移）。
 
 ## 6. Worker 组件
 
@@ -128,9 +155,11 @@ BFS：`Queue<(Url, Depth)>` + `HashSet` 去重（URL 规范化；重定向后的
 | 故障注入 | `Infrastructure/TcpFaultProxy.cs` | 每个 Worker 经一个 TCP 代理连接 Master。`Sever` 用 RST 断开连接，模拟进程崩溃，Master 的流立即结束；`BlackHole` 保持连接但丢弃数据，模拟失联，只能靠健康检查发现；`Restore` 可切换上游端口，用于 Master 重启 |
 | 测试网站 | `Infrastructure/TestWebSite.cs` + `TestSite/*.html` | Kestrel 静态站点，记录请求路径；`HoldRequests` 扣住请求，让任务停在 Running，以便在执行中注入故障 |
 | 等待 | `Infrastructure/Poll.cs` | 轮询加超时（默认 20s），不使用固定 sleep |
+| 假节点 | `Infrastructure/RawNodeClient.cs` | 直接调用 Master gRPC 接口：由测试决定注册参数（如并发上限）、何时发心跳/进度/结果，并记录 Master 下发的全部消息（任务、结果回执）。用于只与 Master 有关、需要精确控制消息顺序的场景（T4） |
 
 约定：
 - 测试中缩短的参数：心跳 1s；健康检查每 1s，5s 无心跳判离线；请求间隔 20ms；进度不节流。生产默认值不变。
 - “进度不回退”的判定依据：Master 发布给界面的 `TaskProgressUpdatedEventArgs`（状态 Pending→Running→Completed、已爬页数都单调不减）。还要等任务完成后的下一次心跳（同一条流按序处理，心跳之前的任务消息必然已处理完），再确认库中状态仍为 Completed。
 - 集成测试集合禁止并行（共享全局 Serilog 与插件目录，并且对时间敏感）。日志写到测试输出，`Component` 属性标出来自 Master 还是哪个 Worker。
-- 测试发现的生产缺陷写成“修复后应有的行为”的测试，先用 Skip 跳过（`MasterWorkerKnownDefectTests`），修复时去掉 Skip。
+- 测试发现的生产缺陷写成“修复后应有的行为”的测试，先用 Skip 跳过（`MasterWorkerKnownDefectTests`），修复时去掉 Skip。T4 的回归测试在 `MasterReliabilityTests`。
+- Kestrel 的 HTTP/2 keepalive 与生产共用 `MasterHostingExtensions.ConfigureMasterHttp2KeepAlive`。

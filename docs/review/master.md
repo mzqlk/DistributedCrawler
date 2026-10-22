@@ -5,6 +5,8 @@
 > 范围：`CrawlerMaster.WPF` 全部代码（含 XAML、配置），以及 Master 用到的 `CrawlerCore` 部分：实体、接口、事件聚合器、配置类、`LogHelper`/`LogConfiguration`、`Protos/crawler.proto`、`SystemObjectJsonConverter`。Worker 侧的问题只在影响 Master 时提到，完整审阅见 T3（`docs/review/worker.md`）。
 >
 > 本报告只记录问题，不改代码。T4 的默认处理范围：P0/P1 全部修复，P2 修复范围局限、风险可控的，P3 只记录。
+>
+> **T4 处理状态见 [§7](#7-t4-处理状态)**：每条 M 编号的状态、提交与对应测试。§4 中的行号仍对应审阅时的代码基线。
 
 ## 1. 方法与证据等级
 
@@ -153,3 +155,64 @@ T4 修改时，以下设计应当保留：
 12. **输入防御**：心跳数值做了 `Math.Max(0, …)`，proto 状态值用 `Enum.IsDefined` 校验，注册落库失败时回滚会话（`RegisterNode` 中的 `RemoveSession`）。
 13. **时间统一用 UTC 存储，显示时用转换器转为本地时间**（M-31 中有一处遗漏）。
 14. **健康检查参数可以配置**（`HealthCheckSettings`），T1 借此把离线判定缩短到 5 秒做测试。M-05、M-07 新增的参数建议沿用同样的方式。
+
+## 7. T4 处理状态
+
+> 2026-10-22，路线图 T4。提交：`989744a`（任务状态机与故障恢复）、`4c2f22b`（双向流、会话、调度与负载均衡、协议扩展）、`7ef58c2`（认证、主机配置与数据库初始化）、`80d67c7`（界面与事件聚合器）。
+> 测试名中标“集成”的在 `CrawlerCore.Tests/Integration/`，其余为单元测试。
+
+### 7.1 状态汇总
+
+| 状态 | 编号 |
+|---|---|
+| 已修复 | P0：M-01、M-02；P1：M-03 – M-09（M-04 ③ 不采用，见下）；P2：M-10 – M-18、M-20 – M-24；P3（随上面的修改一并完成）：M-25、M-29 |
+| 部分修复（P3，随上面的修改顺带完成一部分） | M-27、M-30、M-34、M-38、M-39、M-40 |
+| 不修复，留给 T6 | M-19 |
+| 不修复（P3，只记录） | M-26、M-28、M-31、M-32、M-33、M-35、M-36、M-37 |
+| Worker 侧部分留给 T5 | M-02（排队时不报 Pending，W-22 ①）、M-04 ④（W-23）、M-05（Worker keepalive，W-12）、M-06（Worker 上报并发上限，W-22 ②）、M-11（W-27、D2）、M-21（Worker 配置与 compose 中的默认令牌，W-24 ④）、W-03 的发件箱与重发 |
+
+### 7.2 逐条状态
+
+| 编号 | 状态 | 做法 | 验证 |
+|---|---|---|---|
+| M-01 | 已修复（`7ef58c2`） | `AddGrpc` 中加入 `Interceptors.Add<GrpcAuthenticationInterceptor>()`，与 M-09 一起改；令牌改为定长比较 | 集成：`令牌错误的节点注册被拒绝`（D4，去掉 Skip）、`缺少令牌的StartStreaming被拒绝`；单元：`MasterHostingTests.Grpc_RegistersAuthenticationInterceptor`、`GrpcAuthenticationInterceptorTests` |
+| M-02 | 已修复（`989744a`、`4c2f22b`）；Worker 侧留给 T5 | ① 故障恢复改为 `ResetUnfinishedTasksOfNodeAsync`：在一个事务里重置分配给该节点的 Pending 与 Running；② 重启恢复改为 `ResetTasksForStartupRecoveryAsync`：在库中筛选所有 Pending，以及执行节点不在线的 Running；③ 调度先写“Running + 节点”再下发，下发失败时撤销；④ Worker 上报的 Pending 不再覆盖 Running（M-10）。Worker 侧“排队时不报 Pending”（W-22 ①）留给 T5，Master 已不受它影响 | 集成：`Worker本地排队的任务在节点崩溃后由另一节点完成`（探针 2）、`Master重启后恢复已分配但未完成的任务_并跳过没有活跃流的旧在线节点`；单元：`TaskStateMachineTests`（重置、重启恢复、Pending 不降级）、`FailedTaskRecoveryServiceTests.节点离线事件_本地排队的Pending任务也被重置`、`TaskSchedulerHostedServiceTests`（先写库再下发、下发失败撤销） |
+| M-03 | 已修复（`4c2f22b`、`7ef58c2`） | `RegisterNode`：节点没有活跃流就 `ReplaceSession`（旧会话随即失效），仍有活跃流才拒绝；流断开时不删会话，Worker 用旧会话重连仍可用。`SessionManager` 注册为托管服务，过期清理跳过有活跃流的会话 | 集成：`Worker崩溃后以相同NodeId重启能重新注册上线`（D3，去掉 Skip）、`短暂断流后Worker用旧会话重连_…`；单元：`GrpcMasterRegistrationTests`（无流时替换、有流时拒绝）、`SessionAndEventTests`（替换、过期清理） |
+| M-04 | ①② 已修复（`989744a`、`4c2f22b`）；③ 不采用；④ 留给 T5（W-23） | ① 进度与结果先查任务：任务已分配给其他节点、任务不存在都丢弃并记 Warn。被重置为“Pending + 未分配”的任务，原节点重连后继续上报时由它**认领**为 Running，调度器出队时发现已不是 Pending，就不再重复下发；② `CrawlResults.TaskId` 加唯一索引，写入前也检查，重复结果丢弃。③ 宽限期要求 Worker 侧 W-03（发件箱与重发）同时完成，否则断线期间完成的任务会永久停在 Running；有了①②和“认领”，已能保证只有一份结果，所以 T4 不采用 | 集成：`短暂断流后Worker用旧会话重连_重复执行的任务只保留一份结果且完成后状态不回退`（探针 1）、`被判离线的节点恢复后_其进度和结果被丢弃_任务只在幸存节点上有一份结果`（双节点版）、`被改派后旧节点发来的进度和结果被丢弃_任务只保留新节点的结果`（假节点，结果确定）；单元：`TaskStateMachineTests`、`CoordinatorStreamTests.ResultFromNodeNotAssigned_IsDiscarded` |
+| M-05 | 已修复（`4c2f22b`、`7ef58c2`）；Worker 侧 keepalive 留给 T5（W-12） | ① `ConfigureMasterHttp2KeepAlive`：`GrpcSettings:KeepAlivePingDelaySeconds`/`KeepAlivePingTimeoutSeconds`（默认 15/30），生产与集成测试共用；② 同一会话的新流替换旧流并关闭旧流，不再返回 `AlreadyExists`；③ 健康检查拿到判离线的节点 ID 后调用 `DisconnectNode` 断开其流 | 集成：`失联节点被判离线后Master断开其流_网络恢复后节点重新上线`；单元：`CoordinatorStreamTests`（新流替换旧流、`DisconnectNode`）、`SessionAndEventTests`（健康检查断流）、`MasterHostingTests`（keepalive）。人工复测：禁用网卡 2 分钟后再启用 |
+| M-06 | 已修复（Master 侧，`4c2f22b`）；Worker 填写上限留给 T5（W-22 ②） | `NodeRegistration` 末尾追加 `max_concurrent_tasks = 6`（0 或缺省表示不限）。调度先按“已分配且未结束的任务数”从少到多选节点，再看资源得分；任务数已满的节点不再分配，任务留在 Master 的队列里 | 集成：`一次创建4个任务时两个节点各分到2个`、`任务数已达并发上限的节点不再分配任务`（假节点上报上限）；单元：`LoadBalancingSchedulerTests`、`ProtoContractTests.NodeRegistration_MaxConcurrentTasks_IsBackwardCompatibleExtension` |
+| M-07 | 已修复（`4c2f22b`、`7ef58c2`） | 新增 `LoadBalancingSettings:MaxCpuPercent`/`MaxMemoryPercent`（默认 90）；没有节点满足阈值时，退而选择负载最低的在线节点并记 Warn；总内存未知按 0% | 单元：`LoadBalancingSchedulerTests`（默认阈值接受内存 70% 的节点、阈值可配置、都不满足阈值时的退路） |
+| M-08 | 已修复（`80d67c7`） | 删除 `DataViewerView` 在 `Unloaded` 时释放单例 ViewModel 的代码 | 界面复测 |
+| M-09 | 已修复（`7ef58c2`） | `RpcException` 原样抛出；`OperationCanceledException`/`IOException` 记 Information 后重新抛出；其余异常只返回固定文本 `Internal server error`，详情只写日志 | 单元：`GrpcAuthenticationInterceptorTests`；集成：`令牌正确但会话无效的StartStreaming返回PermissionDenied而不是Internal` |
+| M-10 | 已修复（`989744a`、`4c2f22b`） | 状态写入集中到 `TaskDataService`，用带条件的 `ExecuteUpdate`（条件就是允许的来源状态）：Pending→Running→Completed/Failed，终态不回退；改回 Pending 只能走故障恢复和重启恢复；未知任务、未生效的进度不发布事件 | 单元：`TaskStateMachineTests`；集成：`创建任务后分配并爬取_…进度不回退` |
+| M-11 | 已修复（`989744a`、`4c2f22b`）；Worker 侧（W-27、D2）留给 T5 | Completed 进度只更新页数，库中保持 Running；结果在同一事务中落库并改为 Completed。**顺带完成 W-03 的 Master 侧**：`FromMaster` 末尾追加 `ResultAck result_ack = 4`（字段 `task_id`、`accepted`），结果事务提交后发送；重复结果也回执 `accepted=true`，被丢弃的结果回执 `accepted=false`，落库失败不回执。现有 Worker 不认识这条消息，每次只记一条 Warn，T5 处理 | 单元：`TaskStateMachineTests.ApplyWorkerProgress_CompletedKeepsRunningUntilResultStored`、`CoordinatorStreamTests.CompletedProgress_WaitsForResult_ThenAcks`、`ProtoContractTests.FromMaster_ResultAck_IsBackwardCompatibleExtension`；集成：`Completed进度之后结果未到时任务保持Running_结果落库后才完成并回执` |
+| M-12 | 已修复（`4c2f22b`） | 结果落库抛异常时把任务标为 Failed 并发布进度事件，不发布“收到结果”事件，也不回执。之后再收到该节点的结果（T5 实现重发后），落库成功即改为 Completed | 单元：`CoordinatorStreamTests.ResultPersistenceFailure_MarksTaskFailed`（删掉 PageResults 表让写入失败）、`TaskStateMachineTests.SaveCrawlResult_FailedTaskFromAssignedNode_IsCompleted` |
+| M-13 | 已修复（`80d67c7`） | 订阅者异常改用 `LogHelper.Error` 记录，其他订阅者照常执行 | 单元：`SessionAndEventTests.Publish_SubscriberFailure_DoesNotAffectOthers` |
+| M-14 | 已修复（`989744a`、`4c2f22b`） | 调度器下发与撤销、故障恢复重置、重启恢复都发布 `TaskProgressUpdatedEventArgs`；任务列表“刷新”时同时更新状态 | 单元：`FailedTaskRecoveryServiceTests`（重置后发布 Pending）、`TaskSchedulerHostedServiceTests`（下发前发布 Running）；界面复测 |
+| M-15 | 已修复（`80d67c7`） | 选中节点的 setter 先保存旧值，对旧节点退订 | 界面复测 |
+| M-16 | 已修复（`4c2f22b`） | ① 去掉取消回调中的第二次清理，清理用 `Interlocked` 标志保证只执行一次；② 用 `TryRemove(KeyValuePair)` 只删除自己，被替换的旧流不把节点标离线；③ 链接令牌加 `Task.WhenAny`，任一循环结束就关闭整条流并返回 | 单元：`CoordinatorStreamTests.ReadLoopFault_EndsCall_AndMarksOfflineOnce`、`NewStreamReplacesOld_OldCleanupDoesNotAffectNew`；集成：各断流重连用例 |
+| M-17 | 已修复（`4c2f22b`） | ① 单个任务的分配包在 try/catch 中，出异常时重新入队；② 用 `TaskAssignmentOutcome` 区分已分配、无可用节点、下发失败、不可调度，只有无可用节点和下发失败才重新入队；③ 下发前确认仍为 Pending（`TryMarkTaskDispatchedAsync` 的条件）；④ 候选节点只取有活跃流的节点，下发失败的节点在本次尝试中排除，换下一个节点 | 单元：`TaskSchedulerHostedServiceTests`（异常后重新入队、不可调度、下发失败换节点、候选节点）；集成：`Master重启后…跳过没有活跃流的旧在线节点` |
+| M-18 | 已修复（`989744a`） | 去掉 30 秒窗口和“正在处理就跳过”，改为每个节点一把 `SemaphoreSlim`，同一节点的离线事件依次处理；重置本身是幂等的 | 单元：`FailedTaskRecoveryServiceTests.节点30秒内第二次离线_新分配的任务仍会被重置并入队`、`节点离线事件_重复事件幂等_不重复入队`、`并发触发同一节点离线事件_仅处理一次` |
+| M-19 | 不修复，留给 T6 | 分批回传要改协议，应与 T6 的“一次响应包含多篇论文”一起设计（W-28）。M-16 ③ 修复后，超限不会再让流挂起：流结束 → 节点离线 → 任务重置重做。但仍会无限重做，重试上限也放到 T6 一并设计 | — |
+| M-20 | 已修复（`7ef58c2`） | SignalR 监听地址改为 `SignalRSettings:ListenAddress`（默认 `127.0.0.1`）；CORS 改为 `SignalRSettings:AllowedOrigins` 白名单（默认为空，不允许携带凭据）；gRPC 与 SignalR 的详细错误只在 Development 环境开启 | 单元：`MasterHostingTests`（监听地址解析、CORS、详细错误） |
+| M-21 | 已修复（Master 侧，`7ef58c2`）；Worker 侧留给 T5（W-24 ④） | Master `appsettings.json` 中的令牌改为空；令牌为空或等于公开的 `test-token` 时，启动记 Error、界面弹窗提示，并拒绝所有节点。令牌通过环境变量 `GrpcSettings__NodeAuthToken` 提供，见 `docs/project/deployment.md` | 单元：`GrpcAuthenticationInterceptorTests.UnusableConfiguredToken_RejectsEveryone` |
+| M-22 | 已修复（`7ef58c2`） | `UseContentRoot(AppContext.BaseDirectory)`；相对路径的 Data Source 解析到程序所在目录；`.gitignore` 忽略 `*.db`、`*.db-shm`、`*.db-wal`、`*.db-journal`、`*.db.bak-*`。从 VS 启动的用户，数据库位置不变 | 单元：`MasterHostingTests`（连接字符串解析、容器中 DbContext 的数据库路径）；界面复测 |
+| M-23 | 已修复（`7ef58c2`） | 按 EF 模型逐表逐列检查（`PRAGMA table_info`），不检查索引。结构不符或无法读取时：库中有数据，先备份为 `crawler.db.bak-yyyyMMddTHHmmssZ`（UTC；能读取时用 SQLite 在线备份，读不了时直接复制文件）再重建；没有数据则直接重建；界面弹窗提示备份位置。不再释放 DbContext 自己持有的连接 | 单元：`MasterDatabaseInitializationTests`（7 种情况，只用临时文件） |
+| M-24 | 已修复（`7ef58c2`） | 主窗口第一次关闭时取消关闭，异步停止主机、`DisposeAsync` 容器后再 `Shutdown()`；`OnExit` 改为同步方法，其他途径退出时在线程池上限时停止主机；异常写进日志 | 界面复测 |
+| M-25 | 已修复（P3，随 M-16，`4c2f22b`） | 协调服务不再发布节点状态事件；`NodeManagementService` 只在库中状态真正变化时、保存之后、释放写锁之后发布；心跳事件改到保存之后 | 单元：`CoordinatorStreamTests`（离线事件只发布一次） |
+| M-26 | 不修复（P3） | — | — |
+| M-27 | 部分修复（P3，`989744a`） | 列出的调用处都在 `FailedTaskRecoveryService`，随 M-18 重写已改用插值字符串；`LogHelper` 的重载歧义本身没有改 | — |
+| M-28 | 不修复（P3） | — | — |
+| M-29 | 已修复（P3，随 M-03、M-20，`4c2f22b`、`7ef58c2`） | Master 日志中不再写会话 ID；`EnableDetailedErrors` 只在 Development 环境开启 | 单元：`MasterHostingTests.DetailedErrors_OnlyInDevelopment` |
+| M-30 | 部分修复（P3，`989744a`） | `FailedTaskRecoveryService` 的终结器与过期清理定时器随 M-18 删除；其余死代码（`GrpcHostedService` 等）未删 | — |
+| M-31 – M-33 | 不修复（P3） | — | — |
+| M-34 | 部分修复（P3，`4c2f22b`） | Worker 上报 Failed 时把 `error_message` 写进 Warn 日志；没有加 `ErrorMessage` 列 | — |
+| M-35 – M-37 | 不修复（P3） | — | — |
+| M-38 | 部分修复（P3，`989744a`、`7ef58c2`） | `GetTaskByIdAsync`、`GetAllTasksAsync` 改为 `AsNoTracking`；重启恢复在库中筛选；建库校验不再释放 DbContext 的连接（随 M-23）；没有开启 WAL | — |
+| M-39 | 部分修复（P3，`4c2f22b`） | 定时器回调中作用域的创建移到 try 里面，并防止两次检查重叠执行；没有改为 `BackgroundService` | — |
+| M-40 | 部分修复（P3，`4c2f22b`） | 接口返回值改为 `NodeInfo?`；总内存未知按 0%；重新注册时更新 CPU 核数与总内存。重新入队不阻塞、生产环境开启 `ValidateScopes`、`Dispatcher.Invoke` 没有改 | 单元：`LoadBalancingSchedulerTests.SelectOptimalNode_UnknownTotalMemory_TreatedAsZeroPercent` |
+
+### 7.3 数据库结构变化
+
+- `CrawlResults.TaskId` 新增唯一索引。`EnsureCreated` 不会给已有的库补建索引，而 M-23 的结构检查只看表和列，所以**旧的 `crawler.db` 可以继续使用**：重复结果仍由写入前的检查拦截，只是少了数据库层的兜底。如果想要这个索引，先自行备份，再删除 `crawler.db` 让程序重建。
+- 没有新增或删除列，旧库不会触发自动备份和重建。
