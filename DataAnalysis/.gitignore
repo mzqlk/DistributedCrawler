@@ -1,0 +1,3 @@
+# 运行产物：上传的 JSON、SQLite、LDA 模型/词典/语料、NLTK 资源
+data/
+.venv/

@@ -1,0 +1,12 @@
+# 2026-10-22 在 Python 3.12 / Windows 上用真实导出数据验证通过的版本
+streamlit==1.66.0
+pandas==3.0.6
+nltk==3.10.4
+gensim==4.4.0
+pyLDAvis==3.4.1
+plotly==7.1.0
+wordcloud==1.9.6
+matplotlib==3.11.2
+# gensim / pyLDAvis 对这两个库的版本较敏感，一并锁定
+numpy==2.5.4
+scipy==1.18.1
