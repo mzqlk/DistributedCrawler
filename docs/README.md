@@ -7,6 +7,7 @@
 | 场景 | 读哪里 |
 |---|---|
 | 了解项目是什么、做到哪一步、有哪些已知问题 | [`project/overview.md`](project/overview.md) |
+| 接下来做什么、按什么规则推进、做过哪些决定 | [`roadmap.md`](roadmap.md) |
 | 改动通信/调度/引擎/插件/UI 前了解设计约定 | [`project/design.md`](project/design.md) |
 | 运行、Docker、端口、环境变量、配置项 | [`project/deployment.md`](project/deployment.md) |
 | 原 16 周计划里还有哪些没做（流程设计器、插件 UI、压测、文档…） | [`project/dev-plan.md`](project/dev-plan.md) |
@@ -19,6 +20,7 @@
 ```text
 docs/
 ├── README.md                    本索引
+├── roadmap.md                   后续任务（T1–T10）、管理会话执行规则、决策规则与决策记录
 ├── project/
 │   ├── overview.md              定位、解决方案结构、完成度、已知问题、文档与代码差异
 │   ├── design.md                架构、流程、proto、双向流可靠性、各服务与组件要点、未落地设计

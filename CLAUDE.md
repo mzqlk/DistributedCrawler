@@ -6,6 +6,7 @@
 - `docs/project/overview.md`：完成度、已知问题、文档与代码的差异。
 - `docs/project/design.md`：设计约定。
 - `docs/thesis/proposal.md`：原计划中尚未实现的功能清单。
+- `docs/roadmap.md`：当前任务的顺序、状态、执行规则和决策记录。
 
 文档与代码冲突时以代码为准。
 
@@ -62,5 +63,6 @@ streamlit run app.py
 ## 文档与提交
 
 - 完成一项工作后，更新 `docs/project/overview.md` 中的完成度和已知问题。设计有变化时同步更新 `docs/project/design.md`。
-- **只在用户要求时才提交和推送**。用户习惯直接提交到 master、提交信息用中文。并行会话在 git worktree 的独立分支上工作，完成后先 rebase 到 `origin/master`，再执行 `git push origin HEAD:master`。
+- **后续工作按 [`docs/roadmap.md`](docs/roadmap.md) 串行推进**：由管理会话一次派一个子代理，验收通过后合并到 master 并推送（roadmap 已给出授权）。普通决定直接采用推荐做法，并写进 roadmap 的“决策记录”；只有 roadmap“决策规则”里列出的情况才停下来问用户。
+- 不在 roadmap 流程内的工作，**只在用户要求时才提交和推送**。用户习惯直接提交到 master，提交信息用中文。
 - 远程仓库 `github.com/mzqlk/DistributedCrawler` 是**公开的**。不得提交个人信息（姓名、学号、老师姓名、评语、答辩材料）和来源不明的第三方代码。从 `D:\毕设相关` 引入任何内容之前都要检查。
