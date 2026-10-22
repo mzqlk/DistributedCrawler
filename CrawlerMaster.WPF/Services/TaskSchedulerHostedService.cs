@@ -24,8 +24,7 @@ namespace CrawlerMaster.WPF.Services
         private int _queueCount = 0;
         private long _enqueueCounter = 0;
 
-        private readonly ITaskDataService _taskDataService;
-        // 服务范围工厂
+        // 服务范围工厂（本服务是单例，Scoped 的 ITaskDataService 必须通过作用域获取）
         private readonly IServiceScopeFactory _scopeFactory;
         // 注入负载均衡调度器
         private readonly ILoadBalancingScheduler _loadBalancer;
@@ -44,9 +43,8 @@ namespace CrawlerMaster.WPF.Services
             }
         }
 
-        public TaskSchedulerHostedService(ITaskDataService taskDataService, IServiceScopeFactory scopeFactory, ILoadBalancingScheduler loadBalancer)
+        public TaskSchedulerHostedService(IServiceScopeFactory scopeFactory, ILoadBalancingScheduler loadBalancer)
         {
-            _taskDataService = taskDataService;
             _scopeFactory = scopeFactory;
             _loadBalancer = loadBalancer;
             LogHelper.Info("任务调度后台服务已初始化（已注入资源感知负载均衡调度器，预留调用点）");
@@ -255,7 +253,11 @@ namespace CrawlerMaster.WPF.Services
                 LogHelper.Info("开始执行Master重启任务恢复，加载未调度的Pending任务");
 
                 // 1. 查询符合条件的任务：Pending状态 + 未分配节点
-                var allTasks = await _taskDataService.GetAllTasksAsync();
+                List<CrawlerTask> allTasks;
+                using (var scope = _scopeFactory.CreateScope())
+                {
+                    allTasks = await scope.ServiceProvider.GetRequiredService<ITaskDataService>().GetAllTasksAsync();
+                }
                 var pendingTasks = allTasks
                     .Where(t => t.Status == CrawlerCore.Entities.TaskStatus.Pending
                                 && string.IsNullOrWhiteSpace(t.AssignedNode))

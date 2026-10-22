@@ -31,7 +31,13 @@ namespace CrawlerMaster.WPF.ViewModels
         public CrawlerCore.Entities.TaskStatus Status
         {
             get => _status;
-            set => SetProperty(ref _status, value);
+            set
+            {
+                if (SetProperty(ref _status, value))
+                {
+                    OnPropertyChanged(nameof(ProgressPercent));
+                }
+            }
         }
 
         public int CompletedPages
@@ -59,9 +65,11 @@ namespace CrawlerMaster.WPF.ViewModels
         }
 
         /// <summary>
-        /// 进度百分比
+        /// 进度百分比（已完成页数不落库，从数据库加载的已完成任务直接显示 100%）
         /// </summary>
-        public double ProgressPercent => TotalPages == 0 ? 0 : Math.Round((double)CompletedPages / TotalPages * 100, 2);
+        public double ProgressPercent => Status == CrawlerCore.Entities.TaskStatus.Completed
+            ? 100
+            : TotalPages == 0 ? 0 : Math.Round((double)CompletedPages / TotalPages * 100, 2);
 
         public string AssignedNode
         {

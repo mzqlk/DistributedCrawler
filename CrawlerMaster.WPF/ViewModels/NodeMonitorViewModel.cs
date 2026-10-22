@@ -3,10 +3,12 @@ using CrawlerCore.Entities;
 using CrawlerCore.Events;
 using CrawlerCore.Interfaces;
 using CrawlerMaster.WPF.Views;
+using Microsoft.Extensions.DependencyInjection;
 using OxyPlot;
 using OxyPlot.Axes;
 using OxyPlot.Series;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -25,7 +27,7 @@ namespace CrawlerMaster.WPF.ViewModels
     {
         #region 私有字段
         private readonly IEventAggregator _eventAggregator;
-        private readonly INodeManagementService _nodeManagementService;
+        private readonly IServiceScopeFactory _scopeFactory;
         private readonly Guid _nodeStatusSubscriptionId;
         private readonly SemaphoreSlim _updateLock = new(1, 1);
         private readonly Dispatcher _uiDispatcher;
@@ -70,14 +72,17 @@ namespace CrawlerMaster.WPF.ViewModels
         public IRelayCommand<NodeDisplayInfo> OpenDetailCommand { get; }
 
         #region 构造函数
-        public NodeMonitorViewModel(IEventAggregator eventAggregator, INodeManagementService nodeManagementService)
+        public NodeMonitorViewModel(IEventAggregator eventAggregator, IServiceScopeFactory scopeFactory)
         {
             _eventAggregator = eventAggregator ?? throw new ArgumentNullException(nameof(eventAggregator));
-            _nodeManagementService = nodeManagementService ?? throw new ArgumentNullException(nameof(nodeManagementService));
+            _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
             _uiDispatcher = Application.Current.Dispatcher;
 
             _nodeStatusSubscriptionId = _eventAggregator.Subscribe<NodeStatusChangedEventArgs>(OnNodeStatusChanged);
             OpenDetailCommand = new RelayCommand<NodeDisplayInfo>(ExecuteOpenDetailCommand, CanExecuteOpenDetailCommand);
+
+            // 加载 ViewModel 创建前已在线的节点（此前没有任何地方调用，导致早于界面注册的节点要等下一次心跳才出现）
+            _ = InitializeAsync();
         }
         #endregion
 
@@ -153,19 +158,18 @@ namespace CrawlerMaster.WPF.ViewModels
         #endregion
 
         #region 节点状态变更事件处理
-        private async void OnNodeStatusChanged(object? sender, NodeStatusChangedEventArgs e)
+        private void OnNodeStatusChanged(object? sender, NodeStatusChangedEventArgs e)
         {
             if (_isDisposed || _isDisposing || e.NodeInfo == null) return;
-            if (!await _updateLock.WaitAsync(500)) return;
 
-            try
+            // 直接投递到 UI 调度队列：调度器单线程、按 FIFO 执行，天然串行且保序。
+            // 原实现在 500ms 内抢不到锁就丢弃事件，UI 繁忙时“节点离线”等关键变更会丢失，界面长期显示错误状态
+            _ = _uiDispatcher.InvokeAsync(() =>
             {
                 if (_isDisposed || _isDisposing) return;
 
-                await _uiDispatcher.InvokeAsync(() =>
+                try
                 {
-                    if (_isDisposed || _isDisposing) return;
-
                     var existNode = Nodes.FirstOrDefault(n => n.NodeId == e.NodeId);
                     if (existNode == null && e.NewStatus == NodeStatus.Online)
                     {
@@ -188,27 +192,12 @@ namespace CrawlerMaster.WPF.ViewModels
                             existNode.ClearHistory();
                         }
                     }
-                }, DispatcherPriority.Background);
-            }
-            catch (Exception ex)
-            {
-                if (!_isDisposed)
+                }
+                catch (Exception ex)
                 {
                     CrawlerCore.Infrastructure.LogHelper.Error(ex, "节点状态更新异常");
                 }
-            }
-            finally
-            {
-                if (!_isDisposed)
-                {
-                    try
-                    {
-                        if (_updateLock.CurrentCount == 0)
-                            _updateLock.Release();
-                    }
-                    catch { }
-                }
-            }
+            }, DispatcherPriority.Background);
         }
         #endregion
 
@@ -219,18 +208,26 @@ namespace CrawlerMaster.WPF.ViewModels
 
             try
             {
-                var activeNodes = await _nodeManagementService.GetActiveNodesAsync();
+                List<NodeInfo> activeNodes;
+                using (var scope = _scopeFactory.CreateScope())
+                {
+                    var nodeManagementService = scope.ServiceProvider.GetRequiredService<INodeManagementService>();
+                    activeNodes = await nodeManagementService.GetActiveNodesAsync();
+                }
                 if (!activeNodes.Any() || _isDisposed || _isDisposing) return;
 
                 await _uiDispatcher.InvokeAsync(() =>
                 {
                     if (_isDisposed || _isDisposing) return;
 
-                    Nodes.Clear();
-                    foreach (var node in activeNodes.Select(MapNodeInfoToDisplay))
+                    // 合并而非清空：加载结果可能晚于实时事件到达，已由事件添加的节点保留其最新数据和历史曲线
+                    foreach (var node in activeNodes)
                     {
-                        node.InitializeHistory(node.CpuUsage, node.MemoryUsageMb);
-                        Nodes.Add(node);
+                        if (Nodes.Any(n => n.NodeId == node.NodeId)) continue;
+
+                        var displayNode = MapNodeInfoToDisplay(node);
+                        displayNode.InitializeHistory(node.CpuUsage, node.MemoryUsageMb);
+                        Nodes.Add(displayNode);
                     }
                     OnPropertyChanged(nameof(IsEmpty));
                 }, DispatcherPriority.Background);

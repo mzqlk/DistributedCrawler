@@ -25,6 +25,7 @@ namespace CrawlerMaster.WPF.ViewModels
         private ObservableCollection<TaskDisplayInfo> _taskList = new();
 
         [ObservableProperty]
+        [NotifyCanExecuteChangedFor(nameof(LoadTaskListCommand))]
         private bool _isLoading = false;
 
         public TaskManagementViewModel(IServiceProvider serviceProvider)
@@ -44,8 +45,8 @@ namespace CrawlerMaster.WPF.ViewModels
         /// </summary>
         private void OnTaskProgressUpdated(object? sender, TaskProgressUpdatedEventArgs e)
         {
-            // 确保在 UI 线程上执行更新
-            Application.Current.Dispatcher.Invoke(() =>
+            // 异步投递到 UI 线程（调度队列按 FIFO 执行，保持事件顺序），不阻塞 gRPC 读循环
+            Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 var taskInfo = TaskList.FirstOrDefault(t => t.TaskId == e.TaskId);
                 if (taskInfo != null)
@@ -119,9 +120,9 @@ namespace CrawlerMaster.WPF.ViewModels
                         }
                         else
                         {
-                            // 只更新那些事件可能没有覆盖的基础属性
+                            // 只更新那些事件可能没有覆盖的基础属性。
+                            // TotalPages 由进度事件维护（MaxPages=0 表示不限页数），不能用 MaxPages 覆盖，否则进度会跳回 0%
                             existing.TaskName = task.TaskName;
-                            existing.TotalPages = task.MaxPages;
                             existing.AssignedNode = task.AssignedNode;
                         }
                     }

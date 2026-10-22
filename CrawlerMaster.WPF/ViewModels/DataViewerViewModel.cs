@@ -4,10 +4,12 @@ using CrawlerCore.Common;
 using CrawlerCore.Entities;
 using CrawlerCore.Events;
 using CrawlerCore.Interfaces;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Win32;
 using System;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
@@ -18,7 +20,8 @@ namespace CrawlerMaster.WPF.ViewModels
     public partial class DataViewerViewModel : ObservableObject, IDisposable
     {
         #region 依赖注入
-        private readonly ITaskDataService _taskDataService;
+        // ViewModel 是单例，不能直接持有 Scoped 的 ITaskDataService（其 DbContext 会被多处并发使用），每次访问创建作用域
+        private readonly IServiceScopeFactory _scopeFactory;
         private readonly IEventAggregator _eventAggregator;
         #endregion
 
@@ -39,12 +42,15 @@ namespace CrawlerMaster.WPF.ViewModels
         private bool _isLoading;
 
         [ObservableProperty]
+        [NotifyCanExecuteChangedFor(nameof(PrevPageCommand), nameof(NextPageCommand))]
         private int _pageIndex = 0;
 
         [ObservableProperty]
+        [NotifyCanExecuteChangedFor(nameof(NextPageCommand))]
         private int _pageSize = 20;
 
         [ObservableProperty]
+        [NotifyCanExecuteChangedFor(nameof(NextPageCommand))]
         private int _totalCount;
 
         [ObservableProperty]
@@ -56,6 +62,8 @@ namespace CrawlerMaster.WPF.ViewModels
         #region 私有字段
         private Guid _crawlResultSubscriptionId;
         private bool _isDisposed = false;
+        // 列表加载版本号：并发加载时只采用最后一次请求的结果（仅在 UI 线程读写）
+        private int _crawlResultsLoadVersion;
         // JSON序列化配置（全局复用）
         private static readonly JsonSerializerOptions _jsonSerializerOptions = new JsonSerializerOptions
         {
@@ -68,9 +76,9 @@ namespace CrawlerMaster.WPF.ViewModels
         #endregion
 
         #region 构造函数
-        public DataViewerViewModel(ITaskDataService taskDataService, IEventAggregator eventAggregator)
+        public DataViewerViewModel(IServiceScopeFactory scopeFactory, IEventAggregator eventAggregator)
         {
-            _taskDataService = taskDataService;
+            _scopeFactory = scopeFactory;
             _eventAggregator = eventAggregator;
 
             _crawlResultSubscriptionId = _eventAggregator.Subscribe<CrawlResultReceivedEventArgs>(OnCrawlResultReceived);
@@ -83,19 +91,32 @@ namespace CrawlerMaster.WPF.ViewModels
         [RelayCommand]
         public async Task LoadCrawlResultsAsync()
         {
+            var loadVersion = ++_crawlResultsLoadVersion;
             IsLoading = true;
             try
             {
-                var (items, totalCount) = await _taskDataService.GetPagedCrawlResultProjectionsAsync(
+                using var scope = _scopeFactory.CreateScope();
+                var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+                var (items, totalCount) = await taskDataService.GetPagedCrawlResultProjectionsAsync(
                     PageIndex,
                     PageSize,
                     SearchKeyword.Trim());
+
+                // 期间又发起了新的加载（翻页/搜索/新结果到达），丢弃本次过期结果
+                if (loadVersion != _crawlResultsLoadVersion) return;
+
                 TotalCount = totalCount;
 
+                // 刷新后恢复原选中项，避免新结果到达时右侧单页列表被清空
+                var selectedId = SelectedCrawlResult?.Id;
                 CrawlResults.Clear();
                 foreach (var projection in items)
                 {
                     CrawlResults.Add(CrawlResultDisplayInfo.FromProjection(projection));
+                }
+                if (selectedId != null)
+                {
+                    SelectedCrawlResult = CrawlResults.FirstOrDefault(r => r.Id == selectedId);
                 }
             }
             catch (Exception ex)
@@ -105,7 +126,10 @@ namespace CrawlerMaster.WPF.ViewModels
             }
             finally
             {
-                IsLoading = false;
+                if (loadVersion == _crawlResultsLoadVersion)
+                {
+                    IsLoading = false;
+                }
             }
         }
 
@@ -122,7 +146,14 @@ namespace CrawlerMaster.WPF.ViewModels
 
             try
             {
-                var pageResults = await _taskDataService.GetPageResultsByResultIdAsync(crawlResult.Id);
+                using var scope = _scopeFactory.CreateScope();
+                var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+                var pageResults = await taskDataService.GetPageResultsByResultIdAsync(crawlResult.Id);
+
+                // 加载期间用户已切换到其他任务：丢弃过期结果，否则两个任务的单页数据会混在一起
+                if (!ReferenceEquals(SelectedCrawlResult, crawlResult)) return;
+
+                CurrentPageResults.Clear();
                 foreach (var item in pageResults)
                 {
                     CurrentPageResults.Add(PageResultDisplayInfo.FromEntity(item));
@@ -159,7 +190,7 @@ namespace CrawlerMaster.WPF.ViewModels
         [RelayCommand(CanExecute = nameof(CanNextPage))]
         private void NextPage()
         {
-            if (PageIndex < (TotalCount / PageSize))
+            if (CanNextPage())
             {
                 PageIndex++;
                 OnPropertyChanged(nameof(DisplayPageIndex));
@@ -167,7 +198,8 @@ namespace CrawlerMaster.WPF.ViewModels
             }
         }
 
-        private bool CanNextPage() => PageIndex < (TotalCount / PageSize);
+        // 原写法 PageIndex < TotalCount / PageSize 在总数恰为页大小整数倍时会多出一个空页
+        private bool CanNextPage() => (PageIndex + 1) * PageSize < TotalCount;
 
         [RelayCommand]
         private void Search()
@@ -285,7 +317,9 @@ namespace CrawlerMaster.WPF.ViewModels
         private async Task<(object Data, string FileName)> BuildTaskExportDataAsync(CrawlResultDisplayInfo crawlResult)
         {
             // 获取完整的页面数据
-            var pageResults = await _taskDataService.GetPageResultsByResultIdAsync(crawlResult.Id);
+            using var scope = _scopeFactory.CreateScope();
+            var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+            var pageResults = await taskDataService.GetPageResultsByResultIdAsync(crawlResult.Id);
             var pageExportList = new List<object>();
 
             foreach (var page in pageResults)

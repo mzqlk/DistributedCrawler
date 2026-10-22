@@ -52,7 +52,6 @@ namespace CrawlerCore.Tests.Grpc
 
             _service = new CrawlerCoordinatorService(
                 _sessionManager,
-                mockNodeMgmt.Object,
                 options,
                 NullLogger<CrawlerCoordinatorService>.Instance,
                 mockEventAgg.Object,
@@ -204,7 +203,6 @@ namespace CrawlerCore.Tests.Grpc
             var serviceProvider = services.BuildServiceProvider();
             var eventService = new CrawlerCoordinatorService(
     new SessionManager(NullLogger<SessionManager>.Instance),
-    mockNodeMgmt.Object,
     Options.Create(_grpcSettings),
     NullLogger<CrawlerCoordinatorService>.Instance,
     mockEventAgg.Object,

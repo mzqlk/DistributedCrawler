@@ -26,7 +26,6 @@ namespace CrawlerMaster.WPF.Services
         private readonly SessionManager _sessionManager;
         private readonly GrpcSettings _grpcSettings;
         private readonly ILogger<CrawlerCoordinatorService> _logger;
-        private readonly INodeManagementService _nodeManagementService;
         private readonly IEventAggregator _eventAggregator;
         private readonly IServiceProvider _serviceProvider;
         private readonly ConcurrentDictionary<string, NodeStreamContext> _nodeStreamContexts = new();
@@ -86,14 +85,12 @@ namespace CrawlerMaster.WPF.Services
 
         public CrawlerCoordinatorService(
             SessionManager sessionManager,
-            INodeManagementService nodeManagementService,
             IOptions<GrpcSettings> grpcSettingsOptions,
             ILogger<CrawlerCoordinatorService> logger,
             IEventAggregator eventAggregator,
             IServiceProvider serviceProvider)
         {
             _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
-            _nodeManagementService = nodeManagementService ?? throw new ArgumentNullException(nameof(nodeManagementService));
             _grpcSettings = grpcSettingsOptions?.Value ?? throw new ArgumentNullException(nameof(grpcSettingsOptions));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _eventAggregator = eventAggregator ?? throw new ArgumentNullException(nameof(eventAggregator));
@@ -384,7 +381,8 @@ namespace CrawlerMaster.WPF.Services
                         HandleLogEntryMessage(nodeId, message.LogEntry);
                         break;
                     case FromWorker.MessageOneofCase.CrawlResult:
-                        HandleCrawlResultMessage(nodeId, message.CrawlResult);
+                        // 按到达顺序处理，保证结果先于后续的任务状态落库
+                        await HandleCrawlResultMessage(nodeId, message.CrawlResult);
                         break;
                     case FromWorker.MessageOneofCase.TaskProgress:
                         await HandleTaskProgressMessage(nodeId, message.TaskProgress);
@@ -402,15 +400,27 @@ namespace CrawlerMaster.WPF.Services
             _logger.LogInformation(
                 $"收到节点 {nodeId} 心跳: CPU={hb.CpuUsage:F2}%, 内存={hb.MemoryUsageMb:F2}MB, 活跃任务={hb.ActiveTasks}");
 
-            await _nodeManagementService.UpdateNodeHeartbeatAsync(new NodeInfo
+            // 每次心跳使用独立作用域：单例服务不能长期持有 Scoped 的 DbContext，
+            // 否则会与 UI 查询共用同一个 DbContext 并发访问
+            try
             {
-                NodeId = nodeId,
-                LastHeartbeat = DateTime.UtcNow,
-                CpuUsage = Math.Max(0, hb.CpuUsage),
-                MemoryUsageMb = Math.Max(0, hb.MemoryUsageMb),
-                ActiveTasks = Math.Max(0, hb.ActiveTasks),
-                DiskUsagePercent = Math.Max(0, hb.DiskUsagePercent)
-            });
+                using var scope = _serviceProvider.CreateScope();
+                var nodeManagementService = scope.ServiceProvider.GetRequiredService<INodeManagementService>();
+                await nodeManagementService.UpdateNodeHeartbeatAsync(new NodeInfo
+                {
+                    NodeId = nodeId,
+                    LastHeartbeat = DateTime.UtcNow,
+                    CpuUsage = Math.Max(0, hb.CpuUsage),
+                    MemoryUsageMb = Math.Max(0, hb.MemoryUsageMb),
+                    ActiveTasks = Math.Max(0, hb.ActiveTasks),
+                    DiskUsagePercent = Math.Max(0, hb.DiskUsagePercent)
+                });
+            }
+            catch (Exception ex)
+            {
+                // 单次心跳落库失败不应中断整条双向流
+                _logger.LogError(ex, $"节点 {nodeId} 心跳数据持久化失败");
+            }
 
             var hbHandler = Volatile.Read(ref _heartbeatReceived);
             if (hbHandler != null)
@@ -451,7 +461,7 @@ namespace CrawlerMaster.WPF.Services
             }
         }
 
-        private async void HandleCrawlResultMessage(string nodeId, CrawlerCore.Protos.CrawlResult result)
+        private async Task HandleCrawlResultMessage(string nodeId, CrawlerCore.Protos.CrawlResult result)
         {
             _logger.LogInformation($"收到节点 {nodeId} 爬取结果: TaskId={result.TaskId}, 页面数={result.PageResults.Count}");
 
@@ -531,48 +541,47 @@ namespace CrawlerMaster.WPF.Services
         {
             _logger.LogInformation($"收到节点 {nodeId} 任务进度: TaskId={progress.TaskId}, 已爬取={progress.CrawledPages}/{progress.TotalPages}, 状态={progress.CurrentStatus}");
 
-            _ = Task.Run(async () =>
+            // 在读循环中按到达顺序处理，不再用 Task.Run 并发执行：
+            // 并发时较早的 Running 进度可能晚于 Completed 落库/发布，导致任务状态回退、界面进度错乱
+            try
             {
-                try
+                var statusIntValue = (int)progress.CurrentStatus;
+                if (!Enum.IsDefined(typeof(TaskStatus), statusIntValue))
                 {
-                    var statusIntValue = (int)progress.CurrentStatus;
-                    if (!Enum.IsDefined(typeof(TaskStatus), statusIntValue))
-                    {
-                        _logger.LogWarning($"任务 {progress.TaskId} 状态值 {statusIntValue} 无效，使用默认值Pending");
-                        statusIntValue = (int)TaskStatus.Pending;
-                    }
-                    var taskStatus = (TaskStatus)statusIntValue;
-
-                    string taskName = string.Empty;
-
-                    using (var scope = _serviceProvider.CreateScope())
-                    {
-                        var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
-
-                        await taskDataService.UpdateTaskStatusAsync(progress.TaskId, taskStatus);
-
-                        var task = await taskDataService.GetTaskByIdAsync(progress.TaskId);
-                        if (task != null)
-                        {
-                            taskName = task.TaskName;
-                        }
-                    }
-
-                    var eventArgs = new TaskProgressUpdatedEventArgs(
-                        progress.TaskId,
-                        taskName,
-                        taskStatus,
-                        Math.Max(0, progress.CrawledPages),
-                        Math.Max(0, progress.TotalPages),
-                        nodeId);
-
-                    _eventAggregator.Publish(this, eventArgs);
+                    _logger.LogWarning($"任务 {progress.TaskId} 状态值 {statusIntValue} 无效，使用默认值Pending");
+                    statusIntValue = (int)TaskStatus.Pending;
                 }
-                catch (Exception ex)
+                var taskStatus = (TaskStatus)statusIntValue;
+
+                string taskName = string.Empty;
+
+                using (var scope = _serviceProvider.CreateScope())
                 {
-                    _logger.LogError(ex, $"任务 {progress.TaskId} 进度事件发布异常");
+                    var taskDataService = scope.ServiceProvider.GetRequiredService<ITaskDataService>();
+
+                    await taskDataService.UpdateTaskStatusAsync(progress.TaskId, taskStatus);
+
+                    var task = await taskDataService.GetTaskByIdAsync(progress.TaskId);
+                    if (task != null)
+                    {
+                        taskName = task.TaskName;
+                    }
                 }
-            }, CancellationToken.None);
+
+                var eventArgs = new TaskProgressUpdatedEventArgs(
+                    progress.TaskId,
+                    taskName,
+                    taskStatus,
+                    Math.Max(0, progress.CrawledPages),
+                    Math.Max(0, progress.TotalPages),
+                    nodeId);
+
+                _eventAggregator.Publish(this, eventArgs);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"任务 {progress.TaskId} 进度事件发布异常");
+            }
 
             var progressHandler = Volatile.Read(ref _taskProgressReceived);
             if (progressHandler != null)
