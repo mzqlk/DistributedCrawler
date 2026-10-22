@@ -1,9 +1,10 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
@@ -35,6 +36,11 @@ public sealed class TestWebSite : IAsyncDisposable
     /// <summary>按到达顺序记录的请求路径</summary>
     public ConcurrentQueue<string> RequestedPaths { get; } = new();
 
+    /// <summary>
+    /// /robots.txt 的内容；为 null（默认）时返回 404，Worker 视为没有限制
+    /// </summary>
+    public string? RobotsTxt { get; set; }
+
     /// <summary>测试页面的绝对地址</summary>
     public string PageUrl(string page) => $"{BaseUrl}/site/{page}";
 
@@ -53,6 +59,12 @@ public sealed class TestWebSite : IAsyncDisposable
         {
             site.RequestedPaths.Enqueue(context.Request.Path.Value ?? string.Empty);
             await site.PassGateAsync(context.RequestAborted);
+            if (context.Request.Path == "/robots.txt" && site.RobotsTxt is { } robots)
+            {
+                context.Response.ContentType = "text/plain; charset=utf-8";
+                await context.Response.WriteAsync(robots);
+                return;
+            }
             await next(context);
         });
         app.UseStaticFiles(new StaticFileOptions

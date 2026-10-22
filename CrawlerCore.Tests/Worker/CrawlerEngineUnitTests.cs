@@ -21,7 +21,8 @@ public class CrawlerEngineCompleteTests
     private readonly Mock<IHttpClientFactory> _httpFactoryMock = new();
     private readonly Mock<IPluginManager> _pluginManagerMock = new();  // 改为 Mock 接口
     private readonly Mock<HttpMessageHandler> _httpHandlerMock = new();
-    private readonly IOptions<CrawlerSettings> _settings = Options.Create(new CrawlerSettings());
+    // 不等待请求间隔，测试只关心爬取逻辑；限速与 robots 另见 CrawlerEngineComplianceTests
+    private readonly IOptions<CrawlerSettings> _settings = Options.Create(new CrawlerSettings { DelayBetweenRequestsMs = 0 });
     private readonly CrawlerEngine _engine;
 
     public CrawlerEngineCompleteTests()
@@ -33,7 +34,8 @@ public class CrawlerEngineCompleteTests
             .Returns(() => new HttpClient(_httpHandlerMock.Object));
 
         // 创建引擎实例
-        _engine = new CrawlerEngine(_httpFactoryMock.Object, _pluginManagerMock.Object, _settings);
+        _engine = new CrawlerEngine(_httpFactoryMock.Object, _pluginManagerMock.Object, _settings,
+            AllowAllRobotsPolicy.Instance, new HostRateLimiter(TimeProvider.System));
     }
 
     private void SetupHttpResponse(string content, HttpStatusCode statusCode = HttpStatusCode.OK)
@@ -43,12 +45,15 @@ public class CrawlerEngineCompleteTests
                 "SendAsync",
                 ItExpr.IsAny<HttpRequestMessage>(),
                 ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
+            .ReturnsAsync(() => new HttpResponseMessage
             {
                 StatusCode = statusCode,
-                Content = new StringContent(content)
+                Content = Html(content)
             });
     }
+
+    /// <summary>text/html 响应（引擎只解析 HTML，W-21）</summary>
+    internal static StringContent Html(string content) => new(content, System.Text.Encoding.UTF8, "text/html");
 
     private Mock<ICrawlerPlugin> SetupMockPlugin(string pluginName = "MockPlugin")
     {
@@ -231,7 +236,7 @@ public class CrawlerEngineCompleteTests
         var pluginMock = new Mock<ICrawlerPlugin>();
         pluginMock.Setup(p => p.Name).Returns("MockPlugin");
         pluginMock.Setup(p => p.ExecuteAsync(It.IsAny<PluginContext>()))
-            .ReturnsAsync(new PluginResult { Success = true, Data = null });
+            .ReturnsAsync(new PluginResult { Success = true, Data = null! });
         _pluginManagerMock.Setup(p => p.GetPlugin("MockPlugin")).Returns(pluginMock.Object);
 
         // Act
@@ -399,7 +404,7 @@ public class CrawlerEngineCompleteTests
                 return new HttpResponseMessage
                 {
                     StatusCode = HttpStatusCode.OK,
-                    Content = new StringContent(requestCount == 1 ? startHtml : subHtml)
+                    Content = Html(requestCount == 1 ? startHtml : subHtml)
                 };
             });
 
@@ -421,7 +426,7 @@ public class CrawlerEngineCompleteTests
         var httpHandlerMock = new Mock<HttpMessageHandler>();
         var httpFactoryMock = new Mock<IHttpClientFactory>();
         var pluginManagerMock = new Mock<IPluginManager>();
-        var settings = Options.Create(new CrawlerSettings());
+        var settings = Options.Create(new CrawlerSettings { DelayBetweenRequestsMs = 0 });
 
         // 2. 固定测试数据：2个不同起始页 + 1个公共重复子链接
         const string commonUrl = "https://test.com/common";
@@ -437,10 +442,10 @@ public class CrawlerEngineCompleteTests
         // 3. 极简HTTP Mock：所有请求返回成功，包含公共子链接
         httpHandlerMock.Protected()
             .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
+            .ReturnsAsync(() => new HttpResponseMessage
             {
                 StatusCode = HttpStatusCode.OK,
-                Content = new StringContent($@"<html><body><a href='{commonUrl}'>Common</a></body></html>")
+                Content = Html($@"<html><body><a href='{commonUrl}'>Common</a></body></html>")
             });
 
         // 4. 注入依赖
@@ -457,7 +462,8 @@ public class CrawlerEngineCompleteTests
         pluginManagerMock.Setup(x => x.GetPlugin("MockPlugin")).Returns(pluginMock.Object);
 
         // 6. 创建引擎
-        var engine = new CrawlerEngine(httpFactoryMock.Object, pluginManagerMock.Object, settings);
+        var engine = new CrawlerEngine(httpFactoryMock.Object, pluginManagerMock.Object, settings,
+            AllowAllRobotsPolicy.Instance, new HostRateLimiter(TimeProvider.System));
 
         // Act
         var result = await engine.ExecuteAsync(task, CancellationToken.None);

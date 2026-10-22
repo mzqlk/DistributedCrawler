@@ -24,7 +24,11 @@ namespace CrawlerMaster.WPF.ViewModels
 
         [ObservableProperty]
         [Required(ErrorMessage = "起始URL不能为空")]
-        private string _startUrlsText = "https://arxiv.org/search/?query=machine+learning&searchtype=all&size=50&start=0";
+        // 默认起始页是 robots.txt 允许的最新论文列表（/search 被 arXiv 的 robots.txt 禁止，W-07）
+        private string _startUrlsText = DefaultStartUrl;
+
+        /// <summary>新建任务的默认起始 URL</summary>
+        public const string DefaultStartUrl = "https://arxiv.org/list/cs.LG/recent";
 
         [ObservableProperty]
         [Range(1, 10, ErrorMessage = "最大深度必须在1-10之间")]
