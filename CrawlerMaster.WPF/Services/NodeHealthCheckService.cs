@@ -1,7 +1,9 @@
 ﻿using CrawlerCore.Entities;
 using CrawlerCore.Events;
+using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Serilog;
 using System;
 using System.Timers;
@@ -17,16 +19,23 @@ namespace CrawlerMaster.WPF.Services
         private readonly IServiceProvider _serviceProvider;
         private readonly IEventAggregator _eventAggregator;
         private readonly Timer _timer;
-        private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(15);
-        private readonly TimeSpan _timeoutThreshold = TimeSpan.FromMinutes(1);
+        private readonly TimeSpan _checkInterval;
+        private readonly TimeSpan _timeoutThreshold;
         private Guid _nodeStatusSubscriptionId = Guid.Empty; // 保存订阅ID
         private bool _disposed = false;
 
         // 直接注入Singleton的EventAggregator和根ServiceProvider
-        public NodeHealthCheckService(IServiceProvider serviceProvider, IEventAggregator eventAggregator)
+        // 检查间隔与超时阈值来自 HealthCheckSettings（默认 15 秒 / 60 秒），未配置时使用默认值
+        public NodeHealthCheckService(
+            IServiceProvider serviceProvider,
+            IEventAggregator eventAggregator,
+            IOptions<HealthCheckSettings>? healthCheckOptions = null)
         {
             _serviceProvider = serviceProvider;
             _eventAggregator = eventAggregator;
+            var settings = healthCheckOptions?.Value ?? new HealthCheckSettings();
+            _checkInterval = TimeSpan.FromSeconds(settings.CheckIntervalSeconds > 0 ? settings.CheckIntervalSeconds : 15);
+            _timeoutThreshold = TimeSpan.FromSeconds(settings.NodeTimeoutSeconds > 0 ? settings.NodeTimeoutSeconds : 60);
             _timer = new Timer(_checkInterval.TotalMilliseconds);
             _timer.Elapsed += OnTimerElapsed;
             _timer.AutoReset = true;
