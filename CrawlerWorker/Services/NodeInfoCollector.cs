@@ -26,12 +26,18 @@ namespace CrawlerWorker.Services
         private readonly CrawlerSettings _crawlerSettings;
         private readonly string _nodeId;
 
-        // CPU 采样状态
+        // CPU 采样状态（两次采样差分；首次采样返回 0）
         private readonly object _cpuLock = new();
-        private DateTime _lastCpuCheckTime = DateTime.UtcNow;
         private long _lastIdleTime;
         private long _lastTotalTime;
+        private long _lastCgroupUsageUsec;
+        private long _lastCgroupSampleTimestamp;
         private bool _isFirstCpuSample = true;
+
+        // cgroup v2 与 /proc 的位置（Linux）
+        private const string CgroupRoot = "/sys/fs/cgroup";
+        private const string ProcStatPath = "/proc/stat";
+        private int _platformWarningLogged;
 
         // 节点 ID 相关常量
         private const string NodeIdEnvVar = "MASTER_NODE_ID";
@@ -308,118 +314,56 @@ namespace CrawlerWorker.Services
 
         #region CPU 使用率
 
+        /// <summary>
+        /// CPU 使用率（%）：
+        /// <list type="bullet">
+        /// <item>Windows：GetSystemTimes 的两次采样差分（W-16：原来按处理器查询的结构体布局错误，始终返回 0）。</item>
+        /// <item>Linux 且有 cgroup v2 的 cpu.stat：容器（或整机根 cgroup）的 usage_usec 增量 ÷（时间 × 可用核数），
+        /// 受容器 CPU 配额限制（W-17 ①）。</item>
+        /// <item>其他 Linux：/proc/stat 的整机数据（cgroup v1 时启动时记一次警告）。</item>
+        /// </list>
+        /// </summary>
         private async Task<double> GetSystemCpuUsageAsync()
         {
             try
             {
-                long currentIdleTime = 0;
-                long currentTotalTime = 0;
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    if (!GetSystemTimes(out var idle, out var kernel, out var user))
+                    {
+                        _logger.LogWarning("GetSystemTimes 调用失败，错误码: {Error}", Marshal.GetLastWin32Error());
+                        return 0;
+                    }
+                    // kernel 时间包含 idle
+                    return SampleIdleTotal(ToLong(idle), ToLong(kernel) + ToLong(user));
+                }
 
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
-                    // Linux: 读取 /proc/stat
-                    var statLines = await File.ReadAllLinesAsync("/proc/stat").ConfigureAwait(false);
-                    var cpuLine = statLines.FirstOrDefault(l => l.StartsWith("cpu ", StringComparison.OrdinalIgnoreCase));
-                    if (cpuLine != null)
+                    var cpuStatPath = Path.Combine(CgroupRoot, "cpu.stat");
+                    if (File.Exists(cpuStatPath))
                     {
-                        var parts = cpuLine.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length >= 8)
+                        var cpuStat = await File.ReadAllTextAsync(cpuStatPath).ConfigureAwait(false);
+                        if (ResourceUsageCalculator.TryParseCpuStatUsageUsec(cpuStat, out var usageUsec))
                         {
-                            long total = 0;
-                            for (int i = 1; i < parts.Length; i++)
-                            {
-                                if (long.TryParse(parts[i], out var value))
-                                {
-                                    total += value;
-                                }
-                            }
-                            // Linux: idle = idle + iowait (第4和第5个字段，索引 4 和 5)
-                            currentIdleTime = (long.TryParse(parts[4], out var idle) ? idle : 0) +
-                                              (long.TryParse(parts[5], out var iowait) ? iowait : 0);
-                            currentTotalTime = total;
+                            var cpuMaxPath = Path.Combine(CgroupRoot, "cpu.max");
+                            var cpuMax = File.Exists(cpuMaxPath) ? await File.ReadAllTextAsync(cpuMaxPath).ConfigureAwait(false) : null;
+                            return SampleCgroupUsage(usageUsec, ResourceUsageCalculator.ParseEffectiveCores(cpuMax, Environment.ProcessorCount));
                         }
                     }
-                }
-                else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                {
-                    // Windows: 使用 NtQuerySystemInformation 获取每个处理器的性能数据
-                    int processorCount = Environment.ProcessorCount;
-                    int structSize = Marshal.SizeOf<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION>();
-                    int bufferSize = structSize * processorCount;
-                    IntPtr buffer = Marshal.AllocHGlobal(bufferSize);
 
-                    try
+                    WarnOnceAboutPlatform("未找到 cgroup v2 的 cpu.stat（可能是 cgroup v1），CPU 与内存按整机（宿主机）口径上报");
+                    var statLines = await File.ReadAllLinesAsync(ProcStatPath).ConfigureAwait(false);
+                    var cpuLine = statLines.FirstOrDefault(l => l.StartsWith("cpu ", StringComparison.Ordinal));
+                    if (cpuLine != null && ResourceUsageCalculator.TryParseProcStatCpuLine(cpuLine, out var procIdle, out var procTotal))
                     {
-                        int returnLength = 0;
-                        var status = NtQuerySystemInformation(
-                            SYSTEM_INFORMATION_CLASS.SystemProcessorPerformanceInformation,
-                            buffer,
-                            bufferSize,
-                            ref returnLength);
-
-                        if (status == 0)
-                        {
-                            long totalIdleTime = 0;
-                            long totalKernelTime = 0;
-                            long totalUserTime = 0;
-
-                            for (int i = 0; i < processorCount; i++)
-                            {
-                                IntPtr currentStruct = buffer + i * structSize;
-                                var perfInfo = Marshal.PtrToStructure<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION>(currentStruct);
-                                totalIdleTime += perfInfo.IdleTime;
-                                totalKernelTime += perfInfo.KernelTime;
-                                totalUserTime += perfInfo.UserTime;
-                            }
-
-                            currentIdleTime = totalIdleTime;
-                            currentTotalTime = totalKernelTime + totalUserTime;
-                        }
-                        else
-                        {
-                            _logger.LogWarning("NtQuerySystemInformation 调用失败，状态码: {Status}", status);
-                        }
+                        return SampleIdleTotal(procIdle, procTotal);
                     }
-                    finally
-                    {
-                        Marshal.FreeHGlobal(buffer);
-                    }
+                    return 0;
                 }
 
-                // 采样计算
-                lock (_cpuLock)
-                {
-                    if (_isFirstCpuSample)
-                    {
-                        _lastCpuCheckTime = DateTime.UtcNow;
-                        _lastIdleTime = currentIdleTime;
-                        _lastTotalTime = currentTotalTime;
-                        _isFirstCpuSample = false;
-                        return 0;
-                    }
-
-                    var timeDelta = DateTime.UtcNow - _lastCpuCheckTime;
-                    var idleDelta = currentIdleTime - _lastIdleTime;
-                    var totalDelta = currentTotalTime - _lastTotalTime;
-
-                    // 处理时间回退或异常数据
-                    if (timeDelta.TotalMilliseconds <= 0 || totalDelta <= 0 || idleDelta < 0)
-                    {
-                        _logger.LogDebug("检测到时间回退或计数器异常，重置 CPU 采样状态");
-                        _lastCpuCheckTime = DateTime.UtcNow;
-                        _lastIdleTime = currentIdleTime;
-                        _lastTotalTime = currentTotalTime;
-                        return 0;
-                    }
-
-                    // 更新历史值
-                    _lastCpuCheckTime = DateTime.UtcNow;
-                    _lastIdleTime = currentIdleTime;
-                    _lastTotalTime = currentTotalTime;
-
-                    var cpuUsage = 100.0 * (1 - (double)idleDelta / totalDelta);
-                    return Math.Clamp(cpuUsage, 0, 100);
-                }
+                WarnOnceAboutPlatform($"当前平台（{RuntimeInformation.OSDescription}）不支持采集 CPU 与内存使用量，按 0 上报");
+                return 0;
             }
             catch (Exception ex)
             {
@@ -428,56 +372,78 @@ namespace CrawlerWorker.Services
             }
         }
 
+        private double SampleIdleTotal(long idle, long total)
+        {
+            lock (_cpuLock)
+            {
+                var first = _isFirstCpuSample;
+                var usage = ResourceUsageCalculator.UsagePercent(idle - _lastIdleTime, total - _lastTotalTime);
+                _lastIdleTime = idle;
+                _lastTotalTime = total;
+                _isFirstCpuSample = false;
+                return first ? 0 : Math.Round(usage ?? 0, 2);
+            }
+        }
+
+        private double SampleCgroupUsage(long usageUsec, double effectiveCores)
+        {
+            lock (_cpuLock)
+            {
+                var now = System.Diagnostics.Stopwatch.GetTimestamp();
+                var first = _isFirstCpuSample;
+                var usage = ResourceUsageCalculator.CgroupUsagePercent(
+                    usageUsec - _lastCgroupUsageUsec,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(_lastCgroupSampleTimestamp, now),
+                    effectiveCores);
+                _lastCgroupUsageUsec = usageUsec;
+                _lastCgroupSampleTimestamp = now;
+                _isFirstCpuSample = false;
+                return first ? 0 : Math.Round(usage ?? 0, 2);
+            }
+        }
+
+        private static long ToLong(FILETIME time) => ((long)time.dwHighDateTime << 32) | (uint)time.dwLowDateTime;
+
+        private void WarnOnceAboutPlatform(string message)
+        {
+            if (Interlocked.Exchange(ref _platformWarningLogged, 1) == 0)
+            {
+                _logger.LogWarning("{Message}", message);
+            }
+        }
+
         #endregion
 
         #region 内存使用量
 
+        /// <summary>
+        /// 内存使用量（MB）：容器用 memory.current 减去 inactive_file（与 docker stats 一致，W-17 ②）；
+        /// Linux 整机用 MemTotal − MemAvailable；Windows 上报整机已用物理内存（既定口径，见 design.md）
+        /// </summary>
         private async Task<double> GetSystemMemoryUsageMbAsync(CancellationToken cancellationToken)
         {
             try
             {
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
-                    // 容器环境：优先使用 cgroup v2 内存统计
-                    if (File.Exists("/sys/fs/cgroup/memory.current") && File.Exists("/sys/fs/cgroup/memory.max"))
+                    var currentPath = Path.Combine(CgroupRoot, "memory.current");
+                    if (File.Exists(currentPath))
                     {
-                        var currentStr = await File.ReadAllTextAsync("/sys/fs/cgroup/memory.current", cancellationToken).ConfigureAwait(false);
-                        var maxStr = await File.ReadAllTextAsync("/sys/fs/cgroup/memory.max", cancellationToken).ConfigureAwait(false);
-
+                        var currentStr = await File.ReadAllTextAsync(currentPath, cancellationToken).ConfigureAwait(false);
                         if (long.TryParse(currentStr.Trim(), out var currentBytes))
                         {
-                            // 处理 "max" 情况：使用系统物理内存作为总内存参考
-                            if (maxStr.Trim() == "max")
-                            {
-                                var systemTotalGb = await GetSystemPhysicalMemoryGbAsync(cancellationToken).ConfigureAwait(false);
-                                var systemTotalBytes = (long)(systemTotalGb * 1024 * 1024 * 1024);
-                                var usedMb = (double)currentBytes / 1024 / 1024;
-                                _logger.LogDebug("容器环境内存使用 (cgroup v2, 无限制): {UsedMb:F2} MB", usedMb);
-                                return usedMb;
-                            }
-
-                            if (long.TryParse(maxStr.Trim(), out var maxBytes) && maxBytes > 0)
-                            {
-                                var usedMb = (double)currentBytes / 1024 / 1024;
-                                _logger.LogDebug("容器环境内存使用 (cgroup v2): {UsedMb:F2} MB", usedMb);
-                                return usedMb;
-                            }
+                            var statPath = Path.Combine(CgroupRoot, "memory.stat");
+                            var memoryStat = File.Exists(statPath) ? await File.ReadAllTextAsync(statPath, cancellationToken).ConfigureAwait(false) : null;
+                            return ResourceUsageCalculator.ContainerMemoryUsageBytes(currentBytes, memoryStat) / 1024.0 / 1024.0;
                         }
                     }
 
-                    // 物理机：读取 /proc/meminfo
                     var memInfo = await File.ReadAllLinesAsync("/proc/meminfo", cancellationToken).ConfigureAwait(false);
                     var totalLine = memInfo.FirstOrDefault(l => l.StartsWith("MemTotal:", StringComparison.OrdinalIgnoreCase));
                     var availableLine = memInfo.FirstOrDefault(l => l.StartsWith("MemAvailable:", StringComparison.OrdinalIgnoreCase));
-
                     if (totalLine != null && availableLine != null)
                     {
-                        var totalKb = ExtractKbValue(totalLine);
-                        var availableKb = ExtractKbValue(availableLine);
-                        var usedKb = totalKb - availableKb;
-                        var usedMb = usedKb / 1024.0;
-                        _logger.LogDebug("Linux 系统内存使用: {UsedMb:F2} MB", usedMb);
-                        return usedMb;
+                        return (ExtractKbValue(totalLine) - ExtractKbValue(availableLine)) / 1024.0;
                     }
                 }
                 else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -486,14 +452,10 @@ namespace CrawlerWorker.Services
                     memoryStatus.dwLength = (uint)Marshal.SizeOf(memoryStatus);
                     if (GlobalMemoryStatusEx(ref memoryStatus))
                     {
-                        var usedMemory = memoryStatus.ullTotalPhys - memoryStatus.ullAvailPhys;
-                        var usedMb = usedMemory / 1024.0 / 1024.0;
-                        _logger.LogDebug("Windows 系统内存使用: {UsedMb:F2} MB", usedMb);
-                        return usedMb;
+                        return (memoryStatus.ullTotalPhys - memoryStatus.ullAvailPhys) / 1024.0 / 1024.0;
                     }
                 }
 
-                _logger.LogWarning("无法获取内存使用量，返回 0");
                 return 0;
             }
             catch (Exception ex)
@@ -503,13 +465,14 @@ namespace CrawlerWorker.Services
             }
         }
 
-        private long ExtractKbValue(string line)
+        private static long ExtractKbValue(string line)
         {
             var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             return parts.Length >= 2 && long.TryParse(parts[1], out var value) ? value : 0;
         }
 
         #endregion
+
 
         #region 磁盘使用率
 
@@ -578,28 +541,16 @@ namespace CrawlerWorker.Services
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
 
-        [StructLayout(LayoutKind.Sequential, Pack = 4)]
-        private struct SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FILETIME
         {
-            public long IdleTime;
-            public long KernelTime;
-            public long UserTime;
-            public long DpcTime;
-            public long InterruptTime;
-            public uint InterruptCount;
+            public int dwLowDateTime;
+            public int dwHighDateTime;
         }
 
-        private enum SYSTEM_INFORMATION_CLASS
-        {
-            SystemProcessorPerformanceInformation = 8
-        }
-
-        [DllImport("ntdll.dll")]
-        private static extern int NtQuerySystemInformation(
-            SYSTEM_INFORMATION_CLASS SystemInformationClass,
-            IntPtr SystemInformation,
-            int SystemInformationLength,
-            ref int ReturnLength);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetSystemTimes(out FILETIME lpIdleTime, out FILETIME lpKernelTime, out FILETIME lpUserTime);
 
         #endregion
     }
