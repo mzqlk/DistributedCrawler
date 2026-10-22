@@ -1,6 +1,8 @@
-﻿using CrawlerCore.Protos;
+﻿using CrawlerCore.Infrastructure;
+using CrawlerCore.Protos;
 using Google.Protobuf.WellKnownTypes;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System;
 using System.IO;
 using System.Linq;
@@ -20,6 +22,8 @@ namespace CrawlerWorker.Services
     {
         private readonly ILogger<NodeInfoCollector> _logger;
         private readonly IWorkerSessionManager _sessionManager;
+        private readonly GrpcSettings _grpcSettings;
+        private readonly CrawlerSettings _crawlerSettings;
         private readonly string _nodeId;
 
         // CPU 采样状态
@@ -34,10 +38,16 @@ namespace CrawlerWorker.Services
         private const int MaxNodeIdLength = 128;
         private static readonly Regex NodeIdValidCharRegex = new(@"[^a-zA-Z0-9_\-]", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
 
-        public NodeInfoCollector(ILogger<NodeInfoCollector> logger, IWorkerSessionManager sessionManager)
+        public NodeInfoCollector(
+            ILogger<NodeInfoCollector> logger,
+            IWorkerSessionManager sessionManager,
+            IOptions<GrpcSettings> grpcSettings,
+            IOptions<CrawlerSettings> crawlerSettings)
         {
             _logger = logger;
             _sessionManager = sessionManager;
+            _grpcSettings = grpcSettings.Value;
+            _crawlerSettings = crawlerSettings.Value;
             _nodeId = GenerateNormalizedNodeId();
         }
 
@@ -60,11 +70,13 @@ namespace CrawlerWorker.Services
                 MachineName = machineName,
                 CpuCores = cpuCores,
                 TotalMemoryGb = totalMemoryGb,
-                IpAddress = ipAddress
+                IpAddress = ipAddress,
+                // 告诉 Master 本节点同时执行的任务数上限，Master 不会分配超过这个数的任务（W-22、M-06）
+                MaxConcurrentTasks = Math.Max(1, _crawlerSettings.MaxConcurrentTasks)
             };
 
-            _logger.LogInformation("节点注册信息采集完成: NodeId={NodeId}, MachineName={MachineName}, Cores={Cores}, Memory={Memory}GB, IP={IP}",
-                _nodeId, machineName, cpuCores, totalMemoryGb, ipAddress);
+            _logger.LogInformation("节点注册信息采集完成: NodeId={NodeId}, MachineName={MachineName}, Cores={Cores}, Memory={Memory}GB, IP={IP}, 并发上限={MaxConcurrentTasks}",
+                _nodeId, machineName, cpuCores, totalMemoryGb, ipAddress, registration.MaxConcurrentTasks);
 
             return registration;
         }
@@ -251,9 +263,8 @@ namespace CrawlerWorker.Services
         {
             try
             {
-                // 通过 Master 端点获取出口 IP
-                var masterEndpoint = Environment.GetEnvironmentVariable("MASTER_ENDPOINT") ?? "http://localhost:5001";
-                var masterUri = new Uri(masterEndpoint);
+                // 通过实际使用的 Master 端点（GrpcSettings:MasterEndpoint）获取出口 IP（W-13）
+                var masterUri = new Uri(_grpcSettings.MasterEndpoint);
 
                 using var udpClient = new UdpClient();
                 udpClient.Connect(masterUri.Host, masterUri.Port);

@@ -243,6 +243,10 @@ namespace CrawlerMaster.WPF.Services
 
             try
             {
+                // 立即发送响应头，Worker 据此确认流已被接受（会话有效、已登记），
+                // 再重发未确认的结果、把失败计数清零（T5：W-02、W-03）
+                await context.WriteResponseHeadersAsync(new Metadata()).ConfigureAwait(false);
+
                 var readTask = StartReadLoopAsync(requestStream, nodeId, streamContext.Token);
                 var writeTask = StartWriteLoopAsync(streamContext, streamContext.Token);
 

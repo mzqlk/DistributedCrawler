@@ -1,4 +1,4 @@
-using CrawlerCore.Protos;
+﻿using CrawlerCore.Protos;
 using CrawlerWorker.Services;
 
 namespace CrawlerCore.Tests.Integration.Infrastructure;
@@ -21,11 +21,14 @@ public sealed class TestNodeInfoCollector : INodeInfoCollector
 
     private readonly INodeInfoCollector _inner;
     private readonly string _nodeId;
+    private readonly int? _reportedMaxConcurrentTasks;
 
-    public TestNodeInfoCollector(INodeInfoCollector inner, string nodeId)
+    /// <param name="reportedMaxConcurrentTasks">注册时上报的并发上限；null 表示用真实值，0 模拟不上报上限的旧版 Worker</param>
+    public TestNodeInfoCollector(INodeInfoCollector inner, string nodeId, int? reportedMaxConcurrentTasks = null)
     {
         _inner = inner;
         _nodeId = nodeId;
+        _reportedMaxConcurrentTasks = reportedMaxConcurrentTasks;
     }
 
     public string GetNodeId() => _nodeId;
@@ -34,6 +37,10 @@ public sealed class TestNodeInfoCollector : INodeInfoCollector
     {
         var registration = await _inner.CollectNodeRegistrationAsync(cancellationToken).ConfigureAwait(false);
         registration.NodeId = _nodeId;
+        if (_reportedMaxConcurrentTasks.HasValue)
+        {
+            registration.MaxConcurrentTasks = _reportedMaxConcurrentTasks.Value;
+        }
         // 内存使用率 = FixedMemoryUsageMb / (TotalMemoryGb*1024)，保证总内存足够大以通过负载均衡过滤
         if (registration.TotalMemoryGb < 4)
         {

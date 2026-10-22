@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -10,6 +10,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CrawlerCore.Tests" />
   </ItemGroup>
 
   <!-- 随 Worker 一起部署的插件。只保证构建顺序（ReferenceOutputAssembly=false），Worker 不直接引用插件程序集；

@@ -86,35 +86,6 @@ namespace CrawlerWorker.Communication
             }
         }
 
-        public async Task<bool> CheckMasterConnectivityAsync(CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                if (!TryParseEndpoint(out var host, out var port))
-                    return false;
-
-                _logger.LogDebug("检查 Master 端点 TCP 连通性: {Host}:{Port}", host, port);
-
-                using var tcpClient = new TcpClient();
-                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
-                await tcpClient.ConnectAsync(host, port, linkedCts.Token).ConfigureAwait(false);
-                _logger.LogDebug("Master 端点连通性正常");
-                return true;
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogWarning("Master 端点连通性检查超时: {Endpoint}", _grpcSettings.MasterEndpoint);
-                return false;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Master 端点连通性检查失败: {Endpoint}", _grpcSettings.MasterEndpoint);
-                return false;
-            }
-        }
-
         public async Task ShutdownAsync(CancellationToken cancellationToken = default)
         {
             GrpcChannel? channelToShutdown = null;
@@ -208,7 +179,11 @@ namespace CrawlerWorker.Communication
             return _client;
         }
 
-        private SocketsHttpHandler CreateHttpHandler()
+        /// <summary>
+        /// HTTP/2 处理器。开启 keepalive（W-12）：连接上一段时间没有收到任何帧就发 PING，超时未回应即断开，
+        /// 读循环随之结束，Worker 才能发现 Master 断网、休眠等造成的半开连接并重连（否则要等 TCP 重传超时，Linux 上约 15 分钟）
+        /// </summary>
+        internal SocketsHttpHandler CreateHttpHandler()
         {
             var handler = new SocketsHttpHandler
             {
@@ -216,6 +191,9 @@ namespace CrawlerWorker.Communication
                 PooledConnectionIdleTimeout = TimeSpan.FromMinutes(_grpcSettings.ConnectionIdleTimeoutMinutes),
                 ConnectTimeout = TimeSpan.FromSeconds(10),
                 InitialHttp2StreamWindowSize = 65535,
+                KeepAlivePingDelay = TimeSpan.FromSeconds(Math.Max(1, _grpcSettings.KeepAlivePingDelaySeconds)),
+                KeepAlivePingTimeout = TimeSpan.FromSeconds(Math.Max(1, _grpcSettings.KeepAlivePingTimeoutSeconds)),
+                KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
             };
 
             return handler;
@@ -224,30 +202,6 @@ namespace CrawlerWorker.Communication
         private bool IsInsecureEndpoint()
         {
             return _grpcSettings.MasterEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private bool TryParseEndpoint(out string host, out int port)
-        {
-            host = string.Empty;
-            port = 0;
-
-            try
-            {
-                var uri = new Uri(_grpcSettings.MasterEndpoint);
-                host = uri.Host;
-                port = uri.Port;
-
-                // 兼容 0.0.0.0，转换为 localhost 用于 TCP 连接测试
-                if (host == "0.0.0.0" || host == "[::]")
-                    host = "localhost";
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "解析 MasterEndpoint 失败: {Endpoint}", _grpcSettings.MasterEndpoint);
-                return false;
-            }
         }
 
         private void ThrowIfDisposedOrShutdown()

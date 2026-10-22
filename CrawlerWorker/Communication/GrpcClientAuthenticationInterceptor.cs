@@ -95,8 +95,8 @@ public class GrpcClientAuthenticationInterceptor : Interceptor
         var existingAuth = metadata.Get("authorization");
         if (existingAuth == null)
         {
+            // 不在日志中输出令牌的任何部分（W-14）
             metadata.Add("authorization", $"Bearer {_grpcSettings.NodeAuthToken}");
-            _logger.LogDebug("Token已添加: {Token}", _grpcSettings.NodeAuthToken[..Math.Min(10, _grpcSettings.NodeAuthToken.Length)] + "...");
         }
         else
         {

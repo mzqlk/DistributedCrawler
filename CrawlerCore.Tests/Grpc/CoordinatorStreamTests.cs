@@ -1,4 +1,4 @@
-using CrawlerCore.Entities;
+﻿using CrawlerCore.Entities;
 using CrawlerCore.Events;
 using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
@@ -74,7 +74,7 @@ public sealed class CoordinatorStreamTests : IDisposable
     }
 
     #region 辅助方法
-    private sealed record StreamHandle(Task Call, FakeRequestStream<FromWorker> Requests, FakeResponseStream<FromMaster> Responses);
+    private sealed record StreamHandle(Task Call, FakeRequestStream<FromWorker> Requests, FakeResponseStream<FromMaster> Responses, TestServerCallContext Context);
 
     private StreamHandle OpenStream(string sessionId, CancellationToken callCancellation = default)
     {
@@ -82,7 +82,7 @@ public sealed class CoordinatorStreamTests : IDisposable
         var responses = new FakeResponseStream<FromMaster>();
         var context = new TestServerCallContext(new Metadata { { "node-id", NodeId }, { "session-id", sessionId } }, callCancellation);
         var call = Task.Run(() => _coordinator.StartStreaming(requests, responses, context));
-        return new StreamHandle(call, requests, responses);
+        return new StreamHandle(call, requests, responses, context);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, string description)
@@ -187,6 +187,20 @@ public sealed class CoordinatorStreamTests : IDisposable
 
         var error = await Assert.ThrowsAsync<RpcException>(() => stream.Call.WaitAsync(Timeout));
         Assert.Equal(StatusCode.PermissionDenied, error.StatusCode);
+        Assert.False(stream.Context.ResponseHeadersWritten.IsCompleted, "被拒绝的流不应发送响应头");
+    }
+
+    [Fact(DisplayName = "流被接受后立即发送响应头，此时流已登记（Worker 据此确认建流成功，T5：W-02）")]
+    public async Task AcceptedStream_WritesResponseHeadersAfterAttaching()
+    {
+        var sessionId = _sessionManager.ReplaceSession(NodeId);
+        var stream = OpenStream(sessionId);
+
+        await stream.Context.ResponseHeadersWritten.WaitAsync(Timeout);
+        Assert.True(_coordinator.IsNodeConnected(NodeId));
+
+        stream.Requests.Complete();
+        await stream.Call.WaitAsync(Timeout);
     }
 
     [Fact(DisplayName = "Completed 进度不完成任务；结果落库后才 Completed，并发送结果回执（M-11、W-03 Master 侧）")]

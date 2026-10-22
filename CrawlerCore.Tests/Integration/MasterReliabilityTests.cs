@@ -1,4 +1,4 @@
-using CrawlerCore.Entities;
+﻿using CrawlerCore.Entities;
 using CrawlerCore.Events;
 using CrawlerCore.Protos;
 using CrawlerCore.Tests.Integration.Infrastructure;
@@ -216,10 +216,12 @@ public sealed class MasterReliabilityTests : IntegrationTestBase
     public async Task Worker本地排队的任务在节点崩溃后由另一节点完成()
     {
         var master = await StartMasterAsync();
+        // T5 起 Worker 注册时上报并发上限，Master 不再超额分配（W-22 ②）。这里让节点上报 0（不限，相当于旧版 Worker），
+        // 才能构造出“在 Worker 本地排队”的任务
         var workers = new[]
         {
-            await StartWorkerAsync("it-node-a", master, maxConcurrentTasks: 1),
-            await StartWorkerAsync("it-node-b", master, maxConcurrentTasks: 1),
+            await StartWorkerAsync("it-node-a", master, maxConcurrentTasks: 1, reportedMaxConcurrentTasks: 0),
+            await StartWorkerAsync("it-node-b", master, maxConcurrentTasks: 1, reportedMaxConcurrentTasks: 0),
         };
         await master.WaitForNodeOnlineAsync("it-node-a");
         await master.WaitForNodeOnlineAsync("it-node-b");

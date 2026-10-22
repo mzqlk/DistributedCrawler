@@ -1,4 +1,6 @@
-﻿using CrawlerWorker.Services;
+﻿using CrawlerCore.Infrastructure;
+using CrawlerWorker.Services;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -11,9 +13,15 @@ public class NodeRegistrationTests
 {
     private readonly NodeInfoCollector _nodeInfoCollector;
 
+    private static NodeInfoCollector CreateCollector(int maxConcurrentTasks = 2) => new(
+        NullLogger<NodeInfoCollector>.Instance,
+        new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance),
+        Options.Create(new GrpcSettings { MasterEndpoint = "http://localhost:5001" }),
+        Options.Create(new CrawlerSettings { MaxConcurrentTasks = maxConcurrentTasks }));
+
     public NodeRegistrationTests()
     {
-        _nodeInfoCollector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance, new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance));
+        _nodeInfoCollector = CreateCollector();
     }
 
     [Fact]
@@ -22,7 +30,7 @@ public class NodeRegistrationTests
         // Arrange
         var expectedNodeId = "worker-fixed-001";
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", expectedNodeId);
-        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance, new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance));
+        var collector = CreateCollector();
 
         // Act
         var nodeId = collector.GetNodeId();
@@ -54,7 +62,7 @@ public class NodeRegistrationTests
         // Arrange
         var longNodeId = new string('a', 200);
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", longNodeId);
-        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance, new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance));
+        var collector = CreateCollector();
 
         // Act
         var nodeId = collector.GetNodeId();
@@ -72,7 +80,7 @@ public class NodeRegistrationTests
         // Arrange
         var invalidNodeId = "worker@#$%^&*()_+123";
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", invalidNodeId);
-        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance, new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance));
+        var collector = CreateCollector();
         var expectedNodeId = "worker___________123";
 
         // Act
@@ -98,5 +106,12 @@ public class NodeRegistrationTests
         Assert.True(registration.CpuCores > 0);
         Assert.True(registration.TotalMemoryGb >= 0);
         Assert.False(string.IsNullOrWhiteSpace(registration.IpAddress));
+    }
+
+    [Fact(DisplayName = "W-22 ②：注册信息包含本节点的并发上限（CrawlerSettings:MaxConcurrentTasks）")]
+    public async Task CollectNodeRegistrationAsync_IncludesMaxConcurrentTasks()
+    {
+        var registration = await CreateCollector(maxConcurrentTasks: 3).CollectNodeRegistrationAsync();
+        Assert.Equal(3, registration.MaxConcurrentTasks);
     }
 }

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Grpc.Core;
 
 namespace CrawlerCore.Tests.Grpc;
@@ -32,7 +32,16 @@ public sealed class TestServerCallContext : ServerCallContext
     protected override ContextPropagationToken CreatePropagationTokenCore(ContextPropagationOptions? options)
         => throw new NotSupportedException();
 
-    protected override Task WriteResponseHeadersAsyncCore(Metadata responseHeaders) => Task.CompletedTask;
+    private readonly TaskCompletionSource _responseHeadersWritten = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>服务端写出响应头时完成（Worker 据此确认流已被接受）</summary>
+    public Task ResponseHeadersWritten => _responseHeadersWritten.Task;
+
+    protected override Task WriteResponseHeadersAsyncCore(Metadata responseHeaders)
+    {
+        _responseHeadersWritten.TrySetResult();
+        return Task.CompletedTask;
+    }
 }
 
 /// <summary>

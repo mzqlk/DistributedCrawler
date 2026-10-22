@@ -29,9 +29,9 @@
         public int MaxRetryDelaySeconds { get; set; } = 30;
 
         /// <summary>
-        /// Worker：建流后等待 Master 确认（响应头）的超时，秒。超时视为这次建流失败（W-02）
+        /// Worker：注册时等待 Master 响应、建流后等待 Master 确认（响应头）的超时，秒。超时视为这次尝试失败，退避后重试（W-02）
         /// </summary>
-        public int StreamAcceptTimeoutSeconds { get; set; } = 10;
+        public int MasterResponseTimeoutSeconds { get; set; } = 10;
 
         /// <summary>
         /// Worker：结果发出后这么久（秒）没有收到 Master 的回执就重发（W-03）

@@ -32,7 +32,9 @@ namespace CrawlerCore.Tests.Grpc
             _sessionManager = new SessionManager(Microsoft.Extensions.Logging.Abstractions.NullLogger<SessionManager>.Instance);
             _nodeInfoCollector = new NodeInfoCollector(
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<NodeInfoCollector>.Instance,
-                new WorkerSessionManager(Microsoft.Extensions.Logging.Abstractions.NullLogger<WorkerSessionManager>.Instance));
+                new WorkerSessionManager(Microsoft.Extensions.Logging.Abstractions.NullLogger<WorkerSessionManager>.Instance),
+                Options.Create(_testGrpcSettings),
+                Options.Create(new CrawlerSettings()));
             _grpcClientManager = new GrpcClientManager(
                 Options.Create(_testGrpcSettings),
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance,
@@ -201,23 +203,20 @@ namespace CrawlerCore.Tests.Grpc
 
         #region 连通性检查测试
 
-        [Fact(Timeout = 5000)]
-        public async Task CheckMasterConnectivityAsync_InvalidEndpoint_ReturnsFalse()
+        [Fact(DisplayName = "W-12：gRPC 客户端开启 HTTP/2 keepalive，间隔与超时取 GrpcSettings")]
+        public void ClientHandler_EnablesKeepAlive()
         {
-            using var invalidCts = new CancellationTokenSource(3000);
-            var invalidSettings = Options.Create(new GrpcSettings
-            {
-                MasterEndpoint = "http://invalid-host:9999",
-                MaxRetryAttempts = 1
-            });
-            using var invalidClientManager = new GrpcClientManager(
-                invalidSettings,
+            var settings = Options.Create(new GrpcSettings { MasterEndpoint = "http://localhost:5001", KeepAlivePingDelaySeconds = 7, KeepAlivePingTimeoutSeconds = 9 });
+            using var clientManager = new GrpcClientManager(
+                settings,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance,
-                new GrpcClientAuthenticationInterceptor(invalidSettings, Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientAuthenticationInterceptor>.Instance)
-            );
+                new GrpcClientAuthenticationInterceptor(settings, Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientAuthenticationInterceptor>.Instance));
 
-            var result = await invalidClientManager.CheckMasterConnectivityAsync(invalidCts.Token);
-            Assert.False(result);
+            using var handler = clientManager.CreateHttpHandler();
+
+            Assert.Equal(TimeSpan.FromSeconds(7), handler.KeepAlivePingDelay);
+            Assert.Equal(TimeSpan.FromSeconds(9), handler.KeepAlivePingTimeout);
+            Assert.Equal(System.Net.Http.HttpKeepAlivePingPolicy.Always, handler.KeepAlivePingPolicy);
         }
 
         [Fact]

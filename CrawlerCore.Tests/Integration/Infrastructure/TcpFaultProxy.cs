@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 
@@ -22,6 +22,7 @@ public sealed class TcpFaultProxy : IAsyncDisposable
     private readonly Task _acceptLoop;
     private volatile int _upstreamPort;
     private volatile ProxyMode _mode = ProxyMode.Forward;
+    private int _totalConnections;
 
     private TcpFaultProxy(int upstreamPort)
     {
@@ -41,6 +42,9 @@ public sealed class TcpFaultProxy : IAsyncDisposable
 
     /// <summary>当前仍保持的连接数</summary>
     public int ActiveConnectionCount => _connections.Count;
+
+    /// <summary>累计接受的客户端连接数（W-12：Worker 放弃半开连接后会建立新连接）</summary>
+    public int TotalConnectionCount => Volatile.Read(ref _totalConnections);
 
     public static TcpFaultProxy Start(int upstreamPort) => new(upstreamPort);
 
@@ -88,6 +92,7 @@ public sealed class TcpFaultProxy : IAsyncDisposable
     private async Task HandleClientAsync(Socket client)
     {
         client.NoDelay = true;
+        Interlocked.Increment(ref _totalConnections);
         if (_mode == ProxyMode.Severed)
         {
             ProxyConnection.Reset(client);
@@ -110,6 +115,13 @@ public sealed class TcpFaultProxy : IAsyncDisposable
         var connection = new ProxyConnection(client, upstream);
         var id = Guid.NewGuid();
         _connections[id] = connection;
+        // 登记之后再检查一次：检查模式与登记之间若调用了 Sever()，这条连接不会被它重置（W-35 ③）
+        if (_mode == ProxyMode.Severed)
+        {
+            _connections.TryRemove(id, out _);
+            connection.Abort();
+            return;
+        }
         try
         {
             await Task.WhenAll(

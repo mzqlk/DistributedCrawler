@@ -27,13 +27,6 @@ namespace CrawlerWorker.Communication
         void RecreateChannel();
 
         /// <summary>
-        /// 通过 TCP 连接测试 Master 端点的网络连通性，可用于启动前的健康预检。
-        /// </summary>
-        /// <param name="cancellationToken">取消令牌。</param>
-        /// <returns>连通性测试通过则返回 true；否则返回 false。</returns>
-        Task<bool> CheckMasterConnectivityAsync(CancellationToken cancellationToken = default);
-
-        /// <summary>
         /// 优雅关闭 gRPC 通道，支持超时控制。关闭后管理器将不再可用。
         /// </summary>
         /// <param name="cancellationToken">取消令牌。</param>

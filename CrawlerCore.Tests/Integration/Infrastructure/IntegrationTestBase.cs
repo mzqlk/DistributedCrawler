@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 using Serilog;
 using Serilog.Events;
 using Xunit.Abstractions;
@@ -54,9 +54,10 @@ public abstract class IntegrationTestBase : IAsyncLifetime
         return master;
     }
 
-    protected async Task<TestWorker> StartWorkerAsync(string nodeId, TestMaster master, int maxConcurrentTasks = 2)
+    protected async Task<TestWorker> StartWorkerAsync(string nodeId, TestMaster master, int maxConcurrentTasks = 2,
+        int? reportedMaxConcurrentTasks = null, bool startDisconnected = false)
     {
-        var worker = await TestWorker.StartAsync(nodeId, master.GrpcPort, maxConcurrentTasks);
+        var worker = await TestWorker.StartAsync(nodeId, master.GrpcPort, maxConcurrentTasks, reportedMaxConcurrentTasks, startDisconnected);
         _workers.Add(worker);
         return worker;
     }

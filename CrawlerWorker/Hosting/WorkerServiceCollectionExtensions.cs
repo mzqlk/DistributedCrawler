@@ -1,4 +1,4 @@
-using CrawlerCore.Infrastructure;
+﻿using CrawlerCore.Infrastructure;
 using CrawlerWorker.Communication;
 using CrawlerWorker.Services;
 using CrawlerWorker.Services.Engine;
@@ -52,6 +52,8 @@ public static class WorkerServiceCollectionExtensions
         // 4. 核心业务服务注册
         services.AddSingleton<INodeInfoCollector, NodeInfoCollector>();
         services.AddSingleton<IWorkerSessionManager, WorkerSessionManager>();
+        // 进程级发件箱：跨越断线重连，结果保留到收到回执（W-03）
+        services.AddSingleton<WorkerOutbox>();
         // Worker核心生命周期托管，由.NET主机统一管理
         services.AddHostedService<WorkerHostedService>();
 

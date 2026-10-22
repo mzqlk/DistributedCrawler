@@ -1,4 +1,4 @@
-using CrawlerWorker.Hosting;
+﻿using CrawlerWorker.Hosting;
 using CrawlerWorker.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,9 +36,16 @@ public sealed class TestWorker : IAsyncDisposable
     /// <param name="nodeId">节点标识</param>
     /// <param name="masterGrpcPort">Master gRPC 端口（代理的上游）</param>
     /// <param name="maxConcurrentTasks">Worker 同时执行的任务数</param>
-    public static async Task<TestWorker> StartAsync(string nodeId, int masterGrpcPort, int maxConcurrentTasks = 2)
+    /// <param name="reportedMaxConcurrentTasks">注册时上报的并发上限；null 表示上报真实值，0 模拟不上报上限的旧版 Worker</param>
+    /// <param name="startDisconnected">代理以“断开”状态启动（Master 不可达），由测试稍后 <see cref="TcpFaultProxy.Restore"/></param>
+    public static async Task<TestWorker> StartAsync(string nodeId, int masterGrpcPort, int maxConcurrentTasks = 2,
+        int? reportedMaxConcurrentTasks = null, bool startDisconnected = false)
     {
         var proxy = TcpFaultProxy.Start(masterGrpcPort);
+        if (startDisconnected)
+        {
+            proxy.Sever();
+        }
         var settings = new Dictionary<string, string?>
         {
             ["GrpcSettings:MasterEndpoint"] = proxy.Endpoint,
@@ -46,6 +53,11 @@ public sealed class TestWorker : IAsyncDisposable
             ["GrpcSettings:HeartbeatIntervalSeconds"] = "1",
             ["GrpcSettings:MaxRetryAttempts"] = "3",
             ["GrpcSettings:RetryDelayMilliseconds"] = "200",
+            // 测试中缩短的连接参数：重连退避上限 1 秒，等待 Master 响应 3 秒，keepalive 2 秒/2 秒（生产默认 30、10、15/30 秒）
+            ["GrpcSettings:MaxRetryDelaySeconds"] = "1",
+            ["GrpcSettings:MasterResponseTimeoutSeconds"] = "3",
+            ["GrpcSettings:KeepAlivePingDelaySeconds"] = "2",
+            ["GrpcSettings:KeepAlivePingTimeoutSeconds"] = "2",
             ["GrpcSettings:ConnectionIdleTimeoutMinutes"] = "30",
             ["GrpcSettings:MaxMessageSizeMb"] = "64",
             ["CrawlerSettings:RequestTimeoutSeconds"] = "30",
@@ -73,7 +85,7 @@ public sealed class TestWorker : IAsyncDisposable
                 services.AddCrawlerWorker(context.Configuration);
                 services.AddSingleton<NodeInfoCollector>();
                 services.Replace(ServiceDescriptor.Singleton<INodeInfoCollector>(sp =>
-                    new TestNodeInfoCollector(sp.GetRequiredService<NodeInfoCollector>(), nodeId)));
+                    new TestNodeInfoCollector(sp.GetRequiredService<NodeInfoCollector>(), nodeId, reportedMaxConcurrentTasks)));
                 services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(5));
             })
             .Build();
@@ -87,7 +99,10 @@ public sealed class TestWorker : IAsyncDisposable
         return new TestWorker(nodeId, proxy, host);
     }
 
-    /// <summary>优雅停止（相当于在控制台按 Ctrl+C 或 docker stop）</summary>
+    /// <summary>
+    /// 优雅停止（相当于在控制台按 Ctrl+C 或 docker stop）。停止与释放都不应抛出异常（W-09、W-35），
+    /// 有异常时直接抛给测试，使测试失败
+    /// </summary>
     public async Task StopAsync()
     {
         if (_stopped) return;
@@ -95,26 +110,8 @@ public sealed class TestWorker : IAsyncDisposable
 
         using (LogContext.PushProperty("Component", NodeId))
         {
-            try
-            {
-                await _host.StopAsync(TimeSpan.FromSeconds(5));
-            }
-            catch (Exception ex)
-            {
-                // 已知缺陷：连接已断开时，WorkerHostedService.CleanupStreamResourcesAsync 等待发送队列清空超时，
-                // 抛出的 TimeoutException 未被捕获，导致主机停止（以及 Dispose 中的同步等待）报错。
-                // 这里只记录，不影响后续清理
-                Log.Warning(ex, "测试 Worker {NodeId} 停止时抛出异常", NodeId);
-            }
-
-            try
-            {
-                _host.Dispose();
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "测试 Worker {NodeId} 释放时抛出异常", NodeId);
-            }
+            await _host.StopAsync(TimeSpan.FromSeconds(10));
+            _host.Dispose();
         }
         Log.Information("测试 Worker {NodeId} 已停止", NodeId);
     }

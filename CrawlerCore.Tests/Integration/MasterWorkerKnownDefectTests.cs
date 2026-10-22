@@ -1,4 +1,4 @@
-using CrawlerCore.Entities;
+﻿using CrawlerCore.Entities;
 using CrawlerCore.Protos;
 using CrawlerCore.Tests.Integration.Infrastructure;
 using Grpc.Core;
@@ -11,7 +11,7 @@ namespace CrawlerCore.Tests.Integration;
 /// <summary>
 /// 集成测试暴露出的生产代码缺陷。每个测试描述“修复后应有的行为”，未修复的用 Skip 跳过；
 /// 修复对应缺陷后去掉 Skip，即成为回归测试。缺陷说明见 docs/project/overview.md “已知问题”。
-/// D3、D4 属于 Master，已在 T4 修复；D1、D2 属于 Worker，留给 T5。
+/// D3、D4 属于 Master，已在 T4 修复；D1（W-02）、D2（W-01）属于 Worker，已在 T5 修复。
 /// </summary>
 [Collection(IntegrationTestCollection.Name)]
 [Trait(IntegrationTestCollection.Category, IntegrationTestCollection.Integration)]
@@ -21,8 +21,8 @@ public sealed class MasterWorkerKnownDefectTests : IntegrationTestBase
     {
     }
 
-    [Fact(Skip = "已知缺陷 D1：WorkerHostedService.StartStreamingAsync 在创建流调用后立即把 _reconnectAttempts 清零，"
-        + "重连计数永远到不了 MaxRetryAttempts，Worker 用失效会话无限重连，不会重新注册")]
+    /// <summary>D1（W-02，T5 已修复）：会话失效（PermissionDenied）时立即重新注册；Master 不可达期间按退避一直重试</summary>
+    [Fact]
     public async Task Master重启后在线Worker自动重新注册并继续接收任务()
     {
         var firstMaster = await StartMasterAsync("Master-1");
@@ -37,16 +37,18 @@ public sealed class MasterWorkerKnownDefectTests : IntegrationTestBase
         var secondMaster = await StartMasterAsync("Master-2");
         worker.Proxy.Restore(secondMaster.GrpcPort);
 
-        // Worker 用旧会话重连会被拒绝，重试 MaxRetryAttempts 次后应重新注册
+        // Worker 用旧会话重连会被拒绝（PermissionDenied），应立即重新注册
         await secondMaster.WaitForNodeOnlineAsync("it-node-a");
         var task = await secondMaster.ScheduleTaskAsync(NewSiteTask("缺陷-Master重启后重连"));
         var pages = await secondMaster.WaitForTaskCompletedAsync(task.TaskId);
         Assert.Equal(TestWebSite.DepthTwoPages.Length, pages.Count);
     }
 
-    [Fact(Skip = "已知缺陷 D2：Worker 停止时正在执行的任务不会被重新调度。取消后上报 Completed（引擎把被取消的请求记为 499 页面并正常结束）"
-        + "或 Failed，而故障恢复只处理 Running 任务；且 CleanupStreamResourcesAsync 先取消流再等发送队列，结果消息丢失"
-        + "（本测试中 Master 显示已完成但没有数据）")]
+    /// <summary>
+    /// D2（W-01，T5 已修复）：停止时取消的任务不上报任何终态，流正常结束后 Master 判离线、重置任务，由另一节点完成；
+    /// 停止过程不抛异常（TestWorker.StopAsync 不再吞异常）
+    /// </summary>
+    [Fact]
     public async Task Worker正常停止时正在执行的任务由另一节点重新完成()
     {
         var master = await StartMasterAsync();
