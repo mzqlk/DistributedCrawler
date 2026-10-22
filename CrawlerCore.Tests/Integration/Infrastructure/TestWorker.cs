@@ -38,8 +38,9 @@ public sealed class TestWorker : IAsyncDisposable
     /// <param name="maxConcurrentTasks">Worker 同时执行的任务数</param>
     /// <param name="reportedMaxConcurrentTasks">注册时上报的并发上限；null 表示上报真实值，0 模拟不上报上限的旧版 Worker</param>
     /// <param name="startDisconnected">代理以“断开”状态启动（Master 不可达），由测试稍后 <see cref="TcpFaultProxy.Restore"/></param>
+    /// <param name="authToken">节点令牌；默认与测试 Master 一致</param>
     public static async Task<TestWorker> StartAsync(string nodeId, int masterGrpcPort, int maxConcurrentTasks = 2,
-        int? reportedMaxConcurrentTasks = null, bool startDisconnected = false)
+        int? reportedMaxConcurrentTasks = null, bool startDisconnected = false, string authToken = TestMaster.AuthToken)
     {
         var proxy = TcpFaultProxy.Start(masterGrpcPort);
         if (startDisconnected)
@@ -49,7 +50,7 @@ public sealed class TestWorker : IAsyncDisposable
         var settings = new Dictionary<string, string?>
         {
             ["GrpcSettings:MasterEndpoint"] = proxy.Endpoint,
-            ["GrpcSettings:NodeAuthToken"] = TestMaster.AuthToken,
+            ["GrpcSettings:NodeAuthToken"] = authToken,
             ["GrpcSettings:HeartbeatIntervalSeconds"] = "1",
             ["GrpcSettings:MaxRetryAttempts"] = "3",
             ["GrpcSettings:RetryDelayMilliseconds"] = "200",

@@ -55,9 +55,9 @@ public abstract class IntegrationTestBase : IAsyncLifetime
     }
 
     protected async Task<TestWorker> StartWorkerAsync(string nodeId, TestMaster master, int maxConcurrentTasks = 2,
-        int? reportedMaxConcurrentTasks = null, bool startDisconnected = false)
+        int? reportedMaxConcurrentTasks = null, bool startDisconnected = false, string authToken = TestMaster.AuthToken)
     {
-        var worker = await TestWorker.StartAsync(nodeId, master.GrpcPort, maxConcurrentTasks, reportedMaxConcurrentTasks, startDisconnected);
+        var worker = await TestWorker.StartAsync(nodeId, master.GrpcPort, maxConcurrentTasks, reportedMaxConcurrentTasks, startDisconnected, authToken);
         _workers.Add(worker);
         return worker;
     }
