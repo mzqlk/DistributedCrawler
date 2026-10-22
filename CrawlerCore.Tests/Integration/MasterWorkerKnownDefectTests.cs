@@ -9,8 +9,9 @@ using TaskStatus = CrawlerCore.Entities.TaskStatus;
 namespace CrawlerCore.Tests.Integration;
 
 /// <summary>
-/// 集成测试暴露出的生产代码缺陷。每个测试描述“修复后应有的行为”，目前用 Skip 跳过；
+/// 集成测试暴露出的生产代码缺陷。每个测试描述“修复后应有的行为”，未修复的用 Skip 跳过；
 /// 修复对应缺陷后去掉 Skip，即成为回归测试。缺陷说明见 docs/project/overview.md “已知问题”。
+/// D3、D4 属于 Master，已在 T4 修复；D1、D2 属于 Worker，留给 T5。
 /// </summary>
 [Collection(IntegrationTestCollection.Name)]
 [Trait(IntegrationTestCollection.Category, IntegrationTestCollection.Integration)]
@@ -78,8 +79,8 @@ public sealed class MasterWorkerKnownDefectTests : IntegrationTestBase
         Assert.Equal(survivor.NodeId, (await master.GetTaskAsync(task.TaskId))!.AssignedNode);
     }
 
-    [Fact(Skip = "已知缺陷 D3：流断开时 Master 不移除 SessionManager 中的会话，30 分钟内同一 NodeId 的注册被拒绝"
-        + "（Node already has an active session），Worker 直接退出")]
+    /// <summary>D3（M-03，T4 已修复）：注册时没有活跃流就替换旧会话</summary>
+    [Fact]
     public async Task Worker崩溃后以相同NodeId重启能重新注册上线()
     {
         var master = await StartMasterAsync();
@@ -94,8 +95,8 @@ public sealed class MasterWorkerKnownDefectTests : IntegrationTestBase
         await master.WaitForNodeOnlineAsync("it-node-a");
     }
 
-    [Fact(Skip = "已知缺陷 D4：Master 的 GrpcAuthenticationInterceptor 只注册到容器，没有加入 AddGrpc 的拦截器列表，"
-        + "节点令牌完全不校验")]
+    /// <summary>D4（M-01，T4 已修复）：认证拦截器已加入 AddGrpc 的拦截器列表</summary>
+    [Fact]
     public async Task 令牌错误的节点注册被拒绝()
     {
         var master = await StartMasterAsync();

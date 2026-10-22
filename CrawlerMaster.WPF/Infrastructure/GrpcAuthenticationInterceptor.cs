@@ -1,7 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
+using CrawlerCore.Infrastructure;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Microsoft.Extensions.Configuration;
@@ -10,56 +14,90 @@ using Microsoft.Extensions.Logging;
 namespace CrawlerMaster.WPF.Infrastructure
 {
     /// <summary>
-    /// gRPC 认证拦截器，实现 Token 校验、结构化日志记录以及异常统一转换
+    /// gRPC 认证拦截器：校验节点令牌（Authorization: Bearer），记录请求日志，并统一处理异常。
+    /// 在 <c>AddGrpc</c> 的拦截器列表中启用，对 RegisterNode 与 StartStreaming 都生效。
     /// </summary>
     public class GrpcAuthenticationInterceptor : Interceptor
     {
-        private readonly string _expectedToken;
+        /// <summary>
+        /// 曾出现在公开仓库中的默认令牌。任何人都知道，视同未配置
+        /// </summary>
+        public static readonly IReadOnlySet<string> KnownInsecureTokens = new HashSet<string>(StringComparer.Ordinal) { "test-token" };
+
+        /// <summary>
+        /// 未预期异常返回给客户端的固定文本（详细信息只写日志，不返回给客户端）
+        /// </summary>
+        public const string InternalErrorMessage = "Internal server error";
+
+        private readonly byte[]? _expectedTokenBytes;
         private readonly ILogger<GrpcAuthenticationInterceptor> _logger;
 
         public GrpcAuthenticationInterceptor(IConfiguration configuration, ILogger<GrpcAuthenticationInterceptor> logger)
         {
-            // 从配置中读取预期的 Token，默认空字符串（若未配置则所有请求将因 Token 不匹配而失败）
-            _expectedToken = configuration["GrpcSettings:NodeAuthToken"] ?? string.Empty;
             _logger = logger;
+            var token = configuration[$"{GrpcSettings.SectionName}:{nameof(GrpcSettings.NodeAuthToken)}"];
+            IsTokenConfigured = IsUsableToken(token);
+            if (IsTokenConfigured)
+            {
+                _expectedTokenBytes = Encoding.UTF8.GetBytes(token!);
+            }
+            else
+            {
+                _logger.LogError(
+                    "未配置可用的节点令牌（GrpcSettings:NodeAuthToken 为空，或使用了公开的默认值 test-token），将拒绝所有 Worker 的注册与建流。"
+                    + "请用环境变量 GrpcSettings__NodeAuthToken 设置一个随机令牌，并在 Worker 端设置相同的值");
+            }
         }
 
         /// <summary>
-        /// 一元服务端方法拦截（非流式 RPC）
+        /// 是否配置了可用的令牌。为 false 时拒绝所有请求
+        /// </summary>
+        public bool IsTokenConfigured { get; }
+
+        /// <summary>
+        /// 令牌是否可用：非空，且不是公开的默认令牌
+        /// </summary>
+        public static bool IsUsableToken(string? token)
+            => !string.IsNullOrWhiteSpace(token) && !KnownInsecureTokens.Contains(token.Trim());
+
+        /// <summary>
+        /// 一元服务端方法拦截（RegisterNode）
         /// </summary>
         public override async Task<TResponse> UnaryServerHandler<TRequest, TResponse>(
             TRequest request,
             ServerCallContext context,
             UnaryServerMethod<TRequest, TResponse> continuation)
         {
-            // 1. 认证校验
             Authenticate(context);
 
-            // 2. 记录请求开始
             var method = context.Method;
-            var peer = context.Peer;
-            _logger.LogInformation("一元请求开始: {Method}, 客户端: {Peer}", method, peer);
-
+            _logger.LogInformation("一元请求开始: {Method}, 客户端: {Peer}", method, context.Peer);
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                // 3. 执行实际处理逻辑
                 var response = await continuation(request, context);
-                stopwatch.Stop();
                 _logger.LogInformation("一元请求结束: {Method}, 耗时 {ElapsedMs} ms", method, stopwatch.ElapsedMilliseconds);
                 return response;
             }
+            catch (RpcException)
+            {
+                // 业务代码主动返回的状态码（PermissionDenied 等）原样透传，客户端据此决定如何处理
+                throw;
+            }
+            catch (Exception ex) when (IsClientDisconnect(ex))
+            {
+                _logger.LogInformation("一元请求因客户端断开而结束: {Method}, 耗时 {ElapsedMs} ms", method, stopwatch.ElapsedMilliseconds);
+                throw;
+            }
             catch (Exception ex)
             {
-                stopwatch.Stop();
-                // 4. 异常转换为 RpcException
                 _logger.LogError(ex, "一元请求失败: {Method}, 耗时 {ElapsedMs} ms", method, stopwatch.ElapsedMilliseconds);
-                throw new RpcException(new Status(StatusCode.Internal, $"Internal server error: {ex.Message}"));
+                throw new RpcException(new Status(StatusCode.Internal, InternalErrorMessage));
             }
         }
 
         /// <summary>
-        /// 双向流式服务端方法拦截
+        /// 双向流式服务端方法拦截（StartStreaming）
         /// </summary>
         public override async Task DuplexStreamingServerHandler<TRequest, TResponse>(
             IAsyncStreamReader<TRequest> requestStream,
@@ -67,45 +105,56 @@ namespace CrawlerMaster.WPF.Infrastructure
             ServerCallContext context,
             DuplexStreamingServerMethod<TRequest, TResponse> continuation)
         {
-            // 1. 认证校验
             Authenticate(context);
 
-            // 2. 记录流开始
             var method = context.Method;
-            var peer = context.Peer;
-            _logger.LogInformation("双向流请求开始: {Method}, 客户端: {Peer}", method, peer);
-
+            _logger.LogInformation("双向流请求开始: {Method}, 客户端: {Peer}", method, context.Peer);
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                // 3. 执行实际流处理逻辑
                 await continuation(requestStream, responseStream, context);
-                stopwatch.Stop();
                 _logger.LogInformation("双向流请求结束: {Method}, 耗时 {ElapsedMs} ms", method, stopwatch.ElapsedMilliseconds);
+            }
+            catch (RpcException)
+            {
+                // 会话无效（PermissionDenied）等状态码必须原样返回，Worker 依赖它决定重连还是重新注册
+                throw;
+            }
+            catch (Exception ex) when (IsClientDisconnect(ex))
+            {
+                _logger.LogInformation("双向流因客户端断开而结束: {Method}, 耗时 {ElapsedMs} ms", method, stopwatch.ElapsedMilliseconds);
+                throw;
             }
             catch (Exception ex)
             {
-                stopwatch.Stop();
-                // 4. 异常转换为 RpcException
                 _logger.LogError(ex, "双向流请求失败: {Method}, 耗时 {ElapsedMs} ms", method, stopwatch.ElapsedMilliseconds);
-                throw new RpcException(new Status(StatusCode.Internal, $"Internal server error: {ex.Message}"));
+                throw new RpcException(new Status(StatusCode.Internal, InternalErrorMessage));
             }
         }
 
         /// <summary>
-        /// 认证核心逻辑：从请求头提取 Bearer Token 并与配置值比较
+        /// 客户端断开或调用被取消时产生的异常，属于正常情况，不记为错误
+        /// </summary>
+        private static bool IsClientDisconnect(Exception ex) => ex is OperationCanceledException or IOException;
+
+        /// <summary>
+        /// 从请求头提取 Bearer 令牌并与配置值比较（定长比较，避免按耗时猜测令牌）
         /// </summary>
         private void Authenticate(ServerCallContext context)
         {
-            // 从元数据中获取 Authorization 头
-            var authHeader = context.RequestHeaders.FirstOrDefault(m => m.Key == "authorization")?.Value;
+            if (_expectedTokenBytes == null)
+            {
+                _logger.LogWarning("Master 未配置可用的节点令牌，拒绝请求 {Method}，客户端: {Peer}", context.Method, context.Peer);
+                throw new RpcException(new Status(StatusCode.Unauthenticated, "Node authentication token is not configured on master"));
+            }
+
+            var authHeader = context.RequestHeaders.GetValue("authorization");
             if (string.IsNullOrEmpty(authHeader))
             {
                 _logger.LogWarning("缺少 Authorization 头，客户端: {Peer}", context.Peer);
                 throw new RpcException(new Status(StatusCode.Unauthenticated, "Missing authorization token"));
             }
 
-            // 检查 Bearer 格式
             const string bearerPrefix = "Bearer ";
             if (!authHeader.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
             {
@@ -113,10 +162,10 @@ namespace CrawlerMaster.WPF.Infrastructure
                 throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid authorization header format"));
             }
 
-            var token = authHeader.Substring(bearerPrefix.Length);
-            if (string.IsNullOrEmpty(token) || token != _expectedToken)
+            var tokenBytes = Encoding.UTF8.GetBytes(authHeader.Substring(bearerPrefix.Length));
+            if (!CryptographicOperations.FixedTimeEquals(tokenBytes, _expectedTokenBytes))
             {
-                _logger.LogWarning("Token 无效或未匹配，客户端: {Peer}", context.Peer);
+                _logger.LogWarning("令牌无效，客户端: {Peer}", context.Peer);
                 throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid token"));
             }
         }

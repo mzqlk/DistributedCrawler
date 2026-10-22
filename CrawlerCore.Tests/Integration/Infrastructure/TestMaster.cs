@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using CrawlerCore.Entities;
 using CrawlerCore.Events;
+using CrawlerCore.Infrastructure;
 using CrawlerCore.Interfaces;
 using CrawlerMaster.WPF.Data;
 using CrawlerMaster.WPF.Hosting;
@@ -90,8 +91,13 @@ public sealed class TestMaster : IAsyncDisposable
             .UseSerilog()
             .ConfigureWebHostDefaults(webBuilder =>
             {
-                webBuilder.UseKestrel(options =>
-                    options.Listen(IPAddress.Loopback, 0, listen => listen.Protocols = HttpProtocols.Http2));
+                webBuilder.UseKestrel((context, options) =>
+                {
+                    // 与生产相同的 HTTP/2 keepalive 设置（UseMasterKestrel 中的同一个方法）
+                    MasterHostingExtensions.ConfigureMasterHttp2KeepAlive(options,
+                        context.Configuration.GetSection(GrpcSettings.SectionName).Get<GrpcSettings>() ?? new GrpcSettings());
+                    options.Listen(IPAddress.Loopback, 0, listen => listen.Protocols = HttpProtocols.Http2);
+                });
                 webBuilder.ConfigureServices((context, services) => services.AddMasterWebServices(context.Configuration));
                 webBuilder.Configure((context, app) => app.UseMasterEndpoints(context.Configuration));
             })
@@ -174,6 +180,13 @@ public sealed class TestMaster : IAsyncDisposable
             if (task?.Status != TaskStatus.Completed) return null;
             return await GetPageResultsAsync(taskId);
         }, $"任务 {taskId} 完成且结果落库", timeout);
+
+    public Task WaitForTaskStatusAsync(string taskId, TaskStatus status, TimeSpan? timeout = null)
+        => Poll.UntilAsync(async () => (await GetTaskAsync(taskId))?.Status == status,
+            $"任务 {taskId} 状态变为 {status}", timeout);
+
+    /// <summary>协调服务（查询节点是否有活跃流等）</summary>
+    public CrawlerCoordinatorService Coordinator => Services.GetRequiredService<CrawlerCoordinatorService>();
 
     /// <summary>开始记录 Master 发布的任务进度事件（即界面 ViewModel 收到的事件）</summary>
     public TaskProgressRecorder RecordTaskProgress() => new(Events);

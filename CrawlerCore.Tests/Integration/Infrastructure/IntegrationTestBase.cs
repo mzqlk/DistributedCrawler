@@ -13,6 +13,7 @@ public abstract class IntegrationTestBase : IAsyncLifetime
 {
     private readonly List<TestWorker> _workers = new();
     private readonly List<TestMaster> _masters = new();
+    private readonly List<RawNodeClient> _rawNodes = new();
 
     protected IntegrationTestBase(ITestOutputHelper output)
     {
@@ -60,6 +61,14 @@ public abstract class IntegrationTestBase : IAsyncLifetime
         return worker;
     }
 
+    /// <summary>新建一个直接调用 Master 接口的假节点（不经过代理），测试结束时自动关闭</summary>
+    protected RawNodeClient CreateRawNode(TestMaster master, string nodeId, string? token = TestMaster.AuthToken)
+    {
+        var node = RawNodeClient.Create(master.GrpcPort, nodeId, token);
+        _rawNodes.Add(node);
+        return node;
+    }
+
     /// <summary>新建一个爬取测试网站的任务（MockTestPlugin，默认深度 2）</summary>
     protected CrawlerCore.Entities.CrawlerTask NewSiteTask(string name, int maxDepth = 2, int maxPages = 10, int priority = 3)
         => new()
@@ -74,7 +83,11 @@ public abstract class IntegrationTestBase : IAsyncLifetime
 
     public virtual async Task DisposeAsync()
     {
-        // 先停 Worker（关闭到 Master 的流），再停 Master，避免 Master 停机时等待未结束的流
+        // 先停 Worker 与假节点（关闭到 Master 的流），再停 Master，避免 Master 停机时等待未结束的流
+        foreach (var node in Enumerable.Reverse(_rawNodes))
+        {
+            await SafeAsync(() => node.DisposeAsync().AsTask(), $"关闭假节点 {node.NodeId}");
+        }
         foreach (var worker in Enumerable.Reverse(_workers))
         {
             await SafeAsync(() => worker.DisposeAsync().AsTask(), $"停止 Worker {worker.NodeId}");

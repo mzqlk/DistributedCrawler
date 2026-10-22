@@ -361,3 +361,10 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# 本地 SQLite 数据库（Master 的 crawler.db 及其 WAL/SHM 文件、重建前的备份）不进仓库
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.db.bak-*
