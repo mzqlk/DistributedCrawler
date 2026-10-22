@@ -22,7 +22,7 @@
 | T2 | 审阅 Master（只出报告） | T1 | 已完成 | `564f064` |
 | T3 | 审阅 Worker、Core、插件（只出报告） | T1 | 已完成 | `82d4486` |
 | T4 | 修复 Master 问题 | T2 | 已完成 | `989744a`、`4c2f22b`、`7ef58c2`、`80d67c7`、`12dd8dd` |
-| T5 | 修复 Worker 问题 | T3、T4 | 进行中 | |
+| T5 | 修复 Worker 问题 | T3、T4 | 已完成 | `621a570`、`2659a82`、`3aec038`、`7d587d3`、`a25fa82`、`5993304`、`19e1b60` |
 | T6 | arXiv API 插件与任务分片 | T5 | 待开始 | |
 | T7 | 作者合作网络 | T6 | 待开始 | |
 | T8 | BERTopic 对比 | T7 | 待开始 | |
@@ -219,6 +219,7 @@ Worker 端的 CrawlerEngine 要支持暂停和取消：取消时要正确释放�
 | 2026-10-22 修复视图数据偶发不同步（`6f92906`） | 1. 启动 1 个 Master 和 2 个 Worker，连续创建多个任务：任务状态不应从“已完成”跳回“运行中”，已完成的任务显示 100%。<br>2. 关闭一个 Worker：约 1 分钟内节点显示为离线。<br>3. 在数据查看页快速切换不同任务：单页列表不应混在一起；新结果到达时当前选中项保持不变；刷新、上一页、下一页按钮可用。 | 待复测 |
 | T1 抽出 Master 服务注册（`b75d7e9`） | 1. 用现有的 `crawler.db` 启动 Master：任务管理和数据查看里原有数据都在。<br>2. 启动一个 Worker（MasterEndpoint 改为 `http://localhost:5001`）：节点显示 Online；创建一个任务能完成，数据查看页能看到结果。<br>3. 关闭 Master：约 5 秒内正常退出。<br>（节点监控里 CPU 一直显示 0% 是已知缺陷，见 overview §4 第 8 条，不是本次改动引起。） | 待复测 |
 | T4 修复 Master 问题（`989744a`…`80d67c7`） | 1. **令牌**：不设令牌启动 Master，应弹出“节点令牌未配置”，Worker 注册被拒；两个终端都执行 `$env:GrpcSettings__NodeAuthToken="<随机串>"` 后再分别 `dotnet run`，节点显示在线。<br>2. **数据位置（M-22/M-23）**：在仓库根目录执行 `dotnet run --project CrawlerMaster.WPF`，原有任务和数据都在，不弹“数据库已重建”，仓库根目录下没有新建 `crawler.db`。<br>3. **M-08**：打开“数据查看”，切到“节点监控”再切回来，然后创建任务，结果到达时新行自动出现。<br>4. **M-14**：任务运行中关闭它所在的 Worker，约 1 分钟内节点显示离线、任务显示“待执行”；点“刷新”后状态一致。<br>5. **M-15**：在节点列表里来回点选节点，Master 的 CPU 占用不随点选次数上升，曲线每次心跳只刷新一次。<br>6. **M-24**：关闭 Master，约 5 秒内进程退出，日志末尾有“Master 控制端退出完成”。<br>7. **M-06/M-07**：开两个 Worker，连续创建 4 个任务，每个节点各分到 2 个；内存占用 60%–90% 的机器也能分到任务。<br>8. **M-05**：Worker 放在另一台机器上，禁用网卡 2 分钟后再启用，节点先变为离线，随后重新上线。 | 待复测 |
+| T5 修复 Worker 问题（`621a570`…`5993304`） | 1. 新建任务对话框的默认起始 URL 是 `/list/cs.LG/recent`；用它建一个 MaxPages=3 的任务：Worker 日志先取 robots.txt、请求间隔约 15 秒；数据查看页中作者是完整列表、摘要完整。<br>2. 不设令牌启动 Worker，应立即报错退出；设错令牌，应记 Fatal 后退出。<br>3. 先启动 Worker 再启动 Master，Worker 自动上线；Worker 运行时重启 Master，几秒内重新上线。<br>4. 两个 Worker 都在线时，对执行任务的那个按 Ctrl+C：任务转到另一节点完成，控制台几秒内退出，没有异常堆栈。<br>5. 节点监控里 Windows 节点的 CPU 不再恒为 0%。<br>6. 在仓库根目录执行 `dotnet run --project CrawlerWorker` 能正常启动。<br>7. Docker（本机没有 Docker，未验证）：写好 `.env` 后 `docker compose build` 无告警，镜像 `/app/Plugins` 只有两个插件子目录；`docker compose up` 后 Worker 注册成功；不设 `NODE_AUTH_TOKEN` 时 compose 直接报错；`--cpus=1` 跑满任务时节点监控 CPU 接近 100%。 | 待复测 |
 
 ## 决策记录
 
@@ -258,3 +259,14 @@ Worker 端的 CrawlerEngine 要支持暂停和取消：取消时要正确释放�
 | 2026-10-22 | T4 | Master 的内容根和数据库相对路径改为程序所在目录；`.gitignore` 忽略 `*.db*` | M-22：在仓库根目录 `dotnet run` 会读不到配置并在仓库里新建空库，可能被提交进公开仓库 |
 | 2026-10-22 | T4 | SignalR 保留，默认只监听 127.0.0.1，跨域改白名单（默认为空） | M-20：收紧而不删除已有功能 |
 | 2026-10-22 | T4 | 资源阈值改为 `LoadBalancingSettings`，默认放宽到 90%；没有节点满足时退而选负载最低的在线节点 | M-07：常见开发机内存占用超过原阈值 60%，任务永远不下发 |
+| 2026-10-22 | T5 | P0/P1 全修；P2 除留给 T6 的 W-28 外基本修完；P3 部分修复或只记录。状态见 `docs/review/worker.md` §7 | 按默认处理范围 |
+| 2026-10-22 | T5 | 连接管理改为单一循环：会话失效立即重新注册，令牌错误以退出码 1 退出，其余失败指数退避（上限 30s）；Master 侧改一行（接受流后立即发响应头）用于确认建流成功 | 取代递归重连，修 D1（W-02）与 W-10、W-11 |
+| 2026-10-22 | T5 | 进程级发件箱：结果先于 Completed 发送并保留到收到 `ResultAck`，重连后重发；Failed 不等回执；停止时最多等 3 秒回执；不做“结果落本地文件、崩溃后补发” | W-03；崩溃时未确认的结果由 Master 判离线后重新调度重做 |
+| 2026-10-22 | T5 | Worker 停止时不上报终态，由 Master 判离线后改派 | 修 D2（W-01）：原来把被取消的任务报成 Completed/Failed |
+| 2026-10-22 | T5 | robots.txt：4xx 视为无限制；5xx、429 或网络错误时 1 分钟内不请求该站点；被禁止的 URL 不计入 MaxPages。按主机限速，间隔取设置、插件 CrawlDelay、robots Crawl-delay 的最大值；Retry-After 推迟整个主机（上限 5 分钟），默认重试 2 次 | W-07、W-08、W-20；跨节点总速率留给 T6 |
+| 2026-10-22 | T5 | 爬虫 User-Agent 改为 `DistributedCrawler/1.0 (+https://github.com/mzqlk/DistributedCrawler)`；默认校验证书、只跟随同主机链接、正文上限 5 MB | 采集规范要求可识别的 UA；W-15、W-21 |
+| 2026-10-22 | T5 | 插件按子目录 `Plugins/<插件名>/` 打包，每个插件独立 `AssemblyLoadContext`，解析有超时；ThesisPlugin 1.4.0 按页面结构解析、回退 citation 元数据，parsedData 键名不变，新增 `ParsedDataContract` 契约断言（T6 复用） | W-04、W-05、W-06、W-18、W-25 |
+| 2026-10-22 | T5 | Worker `appsettings.json` 令牌留空，令牌为空或为 `test-token` 时以退出码 1 退出，日志只记令牌长度；`NODE_AUTH_TOKEN` 等简写环境变量真正生效且优先于 `Section__Key` | W-13、W-14，与 T4 的令牌策略一致 |
+| 2026-10-22 | T5 | docker-compose 从环境变量或 `.env`（已 gitignore）读令牌，不再挂载本机 appsettings；默认 1 个副本；Dockerfile 以非 root 运行；新增 `.dockerignore` | W-24；多副本共用出口 IP 会超过 arXiv 的 Crawl-delay，跨节点限速见 T6 |
+| 2026-10-22 | T5 | Windows CPU 改用 `GetSystemTimes`；容器按 cgroup v2 口径计算 CPU 与内存；删除 TCP 预检和 DEBUG 进度模拟器；Worker 默认日志级别改为 Information | W-16、W-17、W-11、W-14 |
+| 2026-10-22 | T5 | 子代理第一次运行在约 1 小时后停滞（约 80 分钟无文件变动、无进程），管理会话停止后以原上下文恢复，此后正常完成 | 用户发现并要求检查 |
