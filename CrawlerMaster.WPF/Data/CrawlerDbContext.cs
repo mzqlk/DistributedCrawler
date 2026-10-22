@@ -72,6 +72,9 @@ namespace CrawlerMaster.WPF.Data
                 entity.ToTable("CrawlResults");
                 entity.Property(e => e.Id).ValueGeneratedOnAdd();
                 entity.Property(e => e.TaskId).IsRequired();
+                // 每个任务只保留一份结果：重复执行、重复上报时由唯一索引兜底（应用层在写入前也会检查）。
+                // EnsureCreated 不会给已有的旧库补建索引，旧库仍由应用层检查去重
+                entity.HasIndex(e => e.TaskId).IsUnique();
                 entity.HasMany(e => e.PageResults)
                       .WithOne()
                       .HasForeignKey(pr => pr.ResultId)

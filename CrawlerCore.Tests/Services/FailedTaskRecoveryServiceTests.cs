@@ -176,6 +176,7 @@ namespace CrawlerCore.Tests.Services
 
             // Assert
             Assert.True(updated, "任务状态未在预期时间内更新为 Pending");
+            Assert.True(signal.Wait(3000), "两个任务未在预期时间内重新入队");
 
             var allTasks = await dbContext.CrawlerTasks.AsNoTracking().ToListAsync();
 
@@ -208,6 +209,15 @@ namespace CrawlerCore.Tests.Services
             _mockTaskSchedulerService.Verify(
                 s => s.ScheduleTaskAsync(It.Is<CrawlerTask>(t => t.Priority == 2)),
                 Times.Once);
+
+            // 4. 界面收到“待执行”通知，不再一直显示“运行中”（M-14）
+            foreach (var reset in new[] { runningTask1, runningTask2 })
+            {
+                _mockEventAggregator.Verify(
+                    e => e.Publish(It.IsAny<object>(), It.Is<TaskProgressUpdatedEventArgs>(a =>
+                        a.TaskId == reset.TaskId && a.CurrentStatus == TaskStatus.Pending && a.AssignedNodeId == string.Empty)),
+                    Times.Once);
+            }
         }
 
         [Fact]
@@ -270,7 +280,7 @@ namespace CrawlerCore.Tests.Services
         }
 
         [Fact]
-        public async Task 节点离线事件_30秒内重复事件_仅处理一次()
+        public async Task 节点离线事件_重复事件幂等_不重复入队()
         {
             // Arrange
             using var scope = _serviceProvider.CreateScope();
@@ -294,7 +304,6 @@ namespace CrawlerCore.Tests.Services
                 NodeStatus.Offline,
                 new NodeInfo { NodeId = testNodeId });
 
-            // 配置调度服务Mock，用信号量同步
             using var firstCallSignal = new ManualResetEventSlim(false);
             var enqueueCallCount = 0;
             _mockTaskSchedulerService
@@ -306,19 +315,104 @@ namespace CrawlerCore.Tests.Services
                     firstCallSignal.Set();
                 });
 
-            // Act
-            // 第一次触发事件
+            // Act：第二次离线事件到达时，任务已被第一次处理重置，不再属于该节点
             _registeredEventHandler.Invoke(this, eventArgs);
-            firstCallSignal.Wait(3000);
-
-            // 1秒后第二次触发（在30秒去重窗口内）
-            await Task.Delay(1000);
+            Assert.True(firstCallSignal.Wait(3000), "第一次离线事件处理超时");
             _registeredEventHandler.Invoke(this, eventArgs);
             await Task.Delay(500);
 
             // Assert
-            Assert.Equal(1, enqueueCallCount);//, "30秒内重复事件仅应处理一次"
-            Assert.Equal(1, _recoveryService.FailedTaskQueue.Count);
+            Assert.Equal(1, enqueueCallCount);
+            Assert.Single(_recoveryService.FailedTaskQueue);
+        }
+
+        [Fact]
+        public async Task 节点30秒内第二次离线_新分配的任务仍会被重置并入队()
+        {
+            // M-18：节点离线 → 恢复 → 重新上线并领到新任务 → 很快再次离线，第二次离线不能被跳过
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
+
+            var testNodeId = "test-node-007";
+            var firstTask = new CrawlerTask
+            {
+                TaskId = Guid.NewGuid().ToString(),
+                TaskName = "第一次离线时的任务",
+                Status = TaskStatus.Running,
+                AssignedNode = testNodeId
+            };
+            await dbContext.CrawlerTasks.AddAsync(firstTask);
+            await dbContext.SaveChangesAsync();
+
+            var enqueued = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            _mockTaskSchedulerService
+                .Setup(s => s.ScheduleTaskAsync(It.IsAny<CrawlerTask>()))
+                .ReturnsAsync(true)
+                .Callback<CrawlerTask>(t => enqueued.Enqueue(t.TaskId));
+
+            var eventArgs = new NodeStatusChangedEventArgs(testNodeId, NodeStatus.Online, NodeStatus.Offline, new NodeInfo { NodeId = testNodeId });
+            _registeredEventHandler.Invoke(this, eventArgs);
+            await WaitUntilAsync(() => enqueued.Contains(firstTask.TaskId), "第一次离线后任务被重新入队");
+
+            // 节点重新上线后领到新任务
+            var secondTask = new CrawlerTask
+            {
+                TaskId = Guid.NewGuid().ToString(),
+                TaskName = "重新上线后领到的任务",
+                Status = TaskStatus.Running,
+                AssignedNode = testNodeId
+            };
+            await dbContext.CrawlerTasks.AddAsync(secondTask);
+            await dbContext.SaveChangesAsync();
+
+            // 1 秒后再次离线（在原来 30 秒的去重窗口内）
+            _registeredEventHandler.Invoke(this, eventArgs);
+            await WaitUntilAsync(() => enqueued.Contains(secondTask.TaskId), "第二次离线后新任务被重新入队");
+
+            var stored = await dbContext.CrawlerTasks.AsNoTracking().FirstAsync(t => t.TaskId == secondTask.TaskId);
+            Assert.Equal(TaskStatus.Pending, stored.Status);
+            Assert.Equal(string.Empty, stored.AssignedNode);
+        }
+
+        [Fact]
+        public async Task 节点离线事件_本地排队的Pending任务也被重置()
+        {
+            // M-02：Worker 本地排队时上报 Pending，旧数据中会出现“Pending + 已分配节点”，节点离线后也必须恢复
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
+
+            var testNodeId = "test-node-008";
+            var queuedTask = new CrawlerTask
+            {
+                TaskId = Guid.NewGuid().ToString(),
+                TaskName = "本地排队的任务",
+                Status = TaskStatus.Pending,
+                AssignedNode = testNodeId
+            };
+            await dbContext.CrawlerTasks.AddAsync(queuedTask);
+            await dbContext.SaveChangesAsync();
+
+            using var signal = new ManualResetEventSlim(false);
+            _mockTaskSchedulerService
+                .Setup(s => s.ScheduleTaskAsync(It.IsAny<CrawlerTask>()))
+                .ReturnsAsync(true)
+                .Callback<CrawlerTask>(_ => signal.Set());
+
+            _registeredEventHandler.Invoke(this, new NodeStatusChangedEventArgs(testNodeId, NodeStatus.Online, NodeStatus.Offline, new NodeInfo { NodeId = testNodeId }));
+
+            Assert.True(signal.Wait(3000), "排队任务应被重新入队");
+            var stored = await dbContext.CrawlerTasks.AsNoTracking().FirstAsync(t => t.TaskId == queuedTask.TaskId);
+            Assert.Equal(string.Empty, stored.AssignedNode);
+        }
+
+        private static async Task WaitUntilAsync(Func<bool> condition, string description)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!condition())
+            {
+                if (DateTime.UtcNow > deadline) throw new TimeoutException($"等待超时：{description}");
+                await Task.Delay(20);
+            }
         }
 
         [Fact]
@@ -367,7 +461,7 @@ namespace CrawlerCore.Tests.Services
 
             // Assert
             Assert.Equal(1, enqueueCallCount);//, "并发触发同一节点离线事件仅应处理一次"
-            Assert.Equal(1, _recoveryService.FailedTaskQueue.Count);
+            Assert.Single(_recoveryService.FailedTaskQueue);
         }
 
         [Fact]
