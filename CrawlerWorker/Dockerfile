@@ -1,35 +1,30 @@
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
 WORKDIR /app
-EXPOSE 5002
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
-# 还原依赖
+# 还原依赖：Worker 以及构建时引用的项目（插件项目只保证构建顺序，发布时复制到 Plugins/<插件名>/）
 COPY ["CrawlerWorker/CrawlerWorker.csproj", "CrawlerWorker/"]
 COPY ["CrawlerCore/CrawlerCore.csproj", "CrawlerCore/"]
+COPY ["ThesisPlugin/ThesisPlugin.csproj", "ThesisPlugin/"]
+COPY ["MockPlugin/MockPlugin.csproj", "MockPlugin/"]
 RUN dotnet restore "CrawlerWorker/CrawlerWorker.csproj"
 
-# 构建发布
+# 发布（构建上下文中的 bin/obj 等本机文件由 .dockerignore 排除）
 COPY . .
-WORKDIR "/src/CrawlerWorker"
-RUN dotnet build "CrawlerWorker.csproj" -c $BUILD_CONFIGURATION -o /app/build
+RUN dotnet publish "CrawlerWorker/CrawlerWorker.csproj" -c $BUILD_CONFIGURATION -o /app/publish --no-restore
 
-FROM build AS publish
-ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "CrawlerWorker.csproj" -c $BUILD_CONFIGURATION -o /app/publish
-
-# 最终运行镜像
+# 最终运行镜像：以基础镜像提供的非 root 用户运行
 FROM base AS final
 WORKDIR /app
-COPY --from=publish /app/publish .
+COPY --from=build /app/publish .
+USER $APP_UID
 
-ENV MASTER_ENDPOINT="http://master:5001"
-ENV MASTER_NODE_ID=""
-ENV NODE_AUTH_TOKEN="your-node-auth-token-here"
-ENV WORKER_ENDPOINT="http://0.0.0.0:5002"
+# Worker 只作为客户端连接 Master，不监听端口。
+# 节点令牌没有默认值：运行时必须通过 NODE_AUTH_TOKEN 提供（与 Master 一致），缺少时 Worker 报错并以退出码 1 退出
+ENV MASTER_ENDPOINT="http://host.docker.internal:5001"
 ENV DOTNET_ENVIRONMENT=Production
 
-# 启动入口
 ENTRYPOINT ["dotnet", "CrawlerWorker.dll"]

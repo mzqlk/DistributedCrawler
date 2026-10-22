@@ -1,20 +1,29 @@
+# 用法：在仓库根目录创建 .env（已被 .gitignore 忽略），写入 NODE_AUTH_TOKEN=<与 Master 相同的随机令牌>，
+# 然后执行 docker compose up -d --build。详见 docs/project/deployment.md
 services:
   crawler-worker:
     build:
       context: .
       dockerfile: CrawlerWorker/Dockerfile
     deploy:
-      replicas: 3
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
+      # 采集 arXiv 时只运行 1 个副本：按主机限速只在单个 Worker 进程内生效，多个副本共用出口 IP 时会超过
+      # robots.txt 的 Crawl-delay（跨节点的总速率见路线图 T6）
+      replicas: 1
     environment:
-      - NODE_AUTH_TOKEN=test-token
-      - MASTER_ENDPOINT=http://host.docker.internal:5001
-      - WORKER_ENDPOINT=http://0.0.0.0:5002
+      # 令牌从环境变量或 .env 读取，不写进仓库；未设置时 compose 直接报错
+      - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN:?请设置 NODE_AUTH_TOKEN（与 Master 的 GrpcSettings__NodeAuthToken 相同）}
+      - MASTER_ENDPOINT=${MASTER_ENDPOINT:-http://host.docker.internal:5001}
+      # 固定节点标识；不设置时使用容器主机名（每次重建容器都会变），多副本时不要设置成同一个值
+      - MASTER_NODE_ID=${MASTER_NODE_ID:-}
       - DOTNET_ENVIRONMENT=Production
-    volumes:
-      - ./CrawlerWorker/appsettings.json:/app/appsettings.json:ro
+    extra_hosts:
+      # Linux 上 host.docker.internal 默认无法解析
+      - "host.docker.internal:host-gateway"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - crawler-network
     restart: unless-stopped

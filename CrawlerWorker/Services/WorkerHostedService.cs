@@ -51,6 +51,7 @@ namespace CrawlerWorker.Services
         private readonly IHostApplicationLifetime _appLifetime;
         private readonly ICrawlerEngine _crawlerEngine;
         private readonly WorkerOutbox _outbox;
+        private readonly IPluginManager _pluginManager;
         #endregion
 
         #region 任务
@@ -78,7 +79,8 @@ namespace CrawlerWorker.Services
             IOptions<SignalRSettings> signalRSettings,
             IHostApplicationLifetime appLifetime,
             ICrawlerEngine crawlerEngine,
-            WorkerOutbox outbox)
+            WorkerOutbox outbox,
+            IPluginManager pluginManager)
         {
             _grpcClientManager = grpcClientManager ?? throw new ArgumentNullException(nameof(grpcClientManager));
             _nodeInfoCollector = nodeInfoCollector ?? throw new ArgumentNullException(nameof(nodeInfoCollector));
@@ -89,6 +91,7 @@ namespace CrawlerWorker.Services
             _appLifetime = appLifetime ?? throw new ArgumentNullException(nameof(appLifetime));
             _crawlerEngine = crawlerEngine ?? throw new ArgumentNullException(nameof(crawlerEngine));
             _outbox = outbox ?? throw new ArgumentNullException(nameof(outbox));
+            _pluginManager = pluginManager ?? throw new ArgumentNullException(nameof(pluginManager));
 
             var maxConcurrentTasks = Math.Max(1, _crawlerSettings.MaxConcurrentTasks);
             _taskConcurrency = new SemaphoreSlim(maxConcurrentTasks, maxConcurrentTasks);
@@ -101,6 +104,19 @@ namespace CrawlerWorker.Services
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             LogHelper.Info($"Worker节点启动，进程ID: {Environment.ProcessId}，NodeId: {_nodeInfoCollector.GetNodeId()}，最大并发任务数: {_taskConcurrency.CurrentCount}");
+            try
+            {
+                // 启动时加载插件，部署有问题（例如没有插件）时日志里立即可见
+                var plugins = _pluginManager.GetAllPlugins();
+                if (plugins.Count == 0)
+                {
+                    LogHelper.Warn("没有加载到任何插件，所有任务都会因“未找到插件”而失败");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogHelper.Error(ex, "加载插件失败");
+            }
             _consumerTask = Task.Run(() => RunTaskConsumerAsync(_taskExecutionCts.Token), CancellationToken.None);
 
             try

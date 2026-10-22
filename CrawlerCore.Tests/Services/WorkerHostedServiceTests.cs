@@ -34,7 +34,8 @@ namespace CrawlerWorker.Tests.Services
                 Options.Create(new SignalRSettings()),
                 new Mock<IHostApplicationLifetime>().Object,
                 new Mock<ICrawlerEngine>().Object,
-                _outbox);
+                _outbox,
+                new Mock<IPluginManager>().Object);
 
             // 模拟已连接，便于观察是否发出了消息
             _outbox.OnStreamAccepted();

@@ -1,0 +1,15 @@
+# 构建上下文只需要源码：排除本机的构建输出、版本库、虚拟环境、数据库与文档（W-24）
+**/bin/
+**/obj/
+**/.vs/
+**/*.user
+.git/
+.gitignore
+**/.venv/
+**/__pycache__/
+*.db
+*.db-*
+*.db.bak-*
+.env
+docs/
+DataAnalysis/
