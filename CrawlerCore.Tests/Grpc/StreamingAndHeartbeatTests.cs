@@ -30,7 +30,9 @@ namespace CrawlerCore.Tests.Grpc
         public StreamingAndHeartbeatTests()
         {
             _sessionManager = new SessionManager(Microsoft.Extensions.Logging.Abstractions.NullLogger<SessionManager>.Instance);
-            _nodeInfoCollector = new NodeInfoCollector(Microsoft.Extensions.Logging.Abstractions.NullLogger<NodeInfoCollector>.Instance);
+            _nodeInfoCollector = new NodeInfoCollector(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<NodeInfoCollector>.Instance,
+                new WorkerSessionManager(Microsoft.Extensions.Logging.Abstractions.NullLogger<WorkerSessionManager>.Instance));
             _grpcClientManager = new GrpcClientManager(
                 Options.Create(_testGrpcSettings),
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<GrpcClientManager>.Instance,

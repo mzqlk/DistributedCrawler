@@ -13,7 +13,7 @@ public class NodeRegistrationTests
 
     public NodeRegistrationTests()
     {
-        _nodeInfoCollector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance);
+        _nodeInfoCollector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance, new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance));
     }
 
     [Fact]
@@ -22,7 +22,7 @@ public class NodeRegistrationTests
         // Arrange
         var expectedNodeId = "worker-fixed-001";
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", expectedNodeId);
-        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance);
+        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance, new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance));
 
         // Act
         var nodeId = collector.GetNodeId();
@@ -54,7 +54,7 @@ public class NodeRegistrationTests
         // Arrange
         var longNodeId = new string('a', 200);
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", longNodeId);
-        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance);
+        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance, new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance));
 
         // Act
         var nodeId = collector.GetNodeId();
@@ -72,7 +72,7 @@ public class NodeRegistrationTests
         // Arrange
         var invalidNodeId = "worker@#$%^&*()_+123";
         Environment.SetEnvironmentVariable("MASTER_NODE_ID", invalidNodeId);
-        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance);
+        var collector = new NodeInfoCollector(NullLogger<NodeInfoCollector>.Instance, new WorkerSessionManager(NullLogger<WorkerSessionManager>.Instance));
         var expectedNodeId = "worker___________123";
 
         // Act
