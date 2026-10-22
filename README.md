@@ -78,10 +78,9 @@
    cd distributed-crawler
    ```
 
-2. **修改配置**
-   - 编辑 `CrawlerMaster.WPF/appsettings.json` 和 `CrawlerWorker/appsettings.json`
-   - ⚠️ **重要安全提示**：生产环境必须修改默认的 `NodeAuthToken` 值（建议使用32位以上随机字符串），确保Master和Worker配置一致
-   - ⚠️ 生产环境请将 `EnableDetailedErrors` 设置为 `false`
+2. **设置节点令牌**
+   - Master 与 Worker 的 `appsettings.json` 中令牌都为空，仓库里不保存任何令牌。启动前在两个终端里设置同一个随机令牌，例如 PowerShell：`$env:GrpcSettings__NodeAuthToken = "<随机字符串>"`
+   - ⚠️ Master 拒绝空令牌和公开的默认值 `test-token`；Worker 令牌为空时直接报错退出。详见 [`docs/project/deployment.md`](docs/project/deployment.md#节点令牌)
 
 3. **编译解决方案**
    ```bash
@@ -90,17 +89,15 @@
 
 4. **启动Master控制端**
    ```bash
-   cd CrawlerMaster.WPF
-   dotnet run
+   dotnet run --project CrawlerMaster.WPF
    ```
-   > 💡 首次运行会自动在当前目录创建`crawler.db`数据库文件
+   > 💡 首次运行会在程序输出目录创建`crawler.db`数据库文件
 
-5. **启动Worker节点（新开终端）**
+5. **启动Worker节点（新开终端，同样先设置令牌）**
    ```bash
-   cd CrawlerWorker
-   dotnet run
+   dotnet run --project CrawlerWorker
    ```
-   > 💡 `CrawlerWorker/appsettings.json` 中的 `MasterEndpoint` 默认是给 Docker 用的 `http://host.docker.internal:5001`；在宿主机直接运行 Worker 时请改为 `http://localhost:5001`。解决方案内的插件项目（如 `ThesisPlugin`）构建后会自动复制到 Worker 输出目录的 `Plugins/`。
+   > 💡 Worker 默认连接 `http://localhost:5001`，Master 在其他机器上时设置环境变量 `MASTER_ENDPOINT`。解决方案内的插件项目（如 `ThesisPlugin`）构建后会自动复制到 Worker 输出目录的 `Plugins/<插件名>/`。Worker 遵守目标网站的 robots.txt，并对同一主机限速；采集 arXiv 时只运行 1 个 Worker。
 
 6. **数据分析（可选）**：见 [`DataAnalysis/`](DataAnalysis/README.md)
 
@@ -113,16 +110,17 @@
    docker build -f CrawlerWorker/Dockerfile -t crawler-worker:latest .
    ```
 
-2. **使用Docker Compose启动多副本**
+2. **使用Docker Compose启动**
    ```bash
-   # Windows/macOS
-   docker-compose up -d --scale crawler-worker=3
+   # 在仓库根目录的 .env 中写入与 Master 相同的令牌（.env 不会被提交）
+   echo "NODE_AUTH_TOKEN=<与 Master 相同的令牌>" > .env
+   docker compose up -d --build
 
-   # Linux（需替换为宿主机实际IP地址）
-   MASTER_ENDPOINT=http://192.168.1.100:5001 docker-compose up -d --scale crawler-worker=3
+   # Master 不在本机时指定地址
+   MASTER_ENDPOINT=http://192.168.1.100:5001 docker compose up -d --build
    ```
 
-   默认启动3个Worker节点，可根据需要调整副本数量。
+   默认启动 1 个 Worker 节点：按主机限速只在单个 Worker 内生效，采集 arXiv 时不要增加副本（跨节点限速见路线图 T6）。
 
 ## ⚙️ 核心配置说明
 
@@ -134,7 +132,7 @@
     "MasterEndpoint": "http://0.0.0.0:5001",    // gRPC服务监听地址
     "HeartbeatIntervalSeconds": 5,              // 心跳上报间隔（秒）
     "MaxMessageSizeMb": 64,                     // 最大消息大小（MB）
-    "NodeAuthToken": "your-secure-token-here"   // 节点认证令牌（必须修改）
+    "NodeAuthToken": ""                         // 留空，通过环境变量 GrpcSettings__NodeAuthToken 设置
   },
   "CrawlerSettings": {
     "RequestTimeoutSeconds": 30,                // HTTP请求超时时间（秒）
@@ -152,11 +150,12 @@
 ```json
 {
   "GrpcSettings": {
-    "MasterEndpoint": "http://host.docker.internal:5001",  // Master控制端地址（本机直接运行改为 http://localhost:5001）
-    "NodeAuthToken": "your-secure-token-here"   // 与Master保持一致
+    "MasterEndpoint": "http://localhost:5001",  // Master控制端地址（也可用环境变量 MASTER_ENDPOINT）
+    "NodeAuthToken": ""                         // 留空，通过环境变量 NODE_AUTH_TOKEN 设置，与 Master 一致
   },
   "CrawlerSettings": {
-    "MaxConcurrentTasks": 2                     // 单节点最大并发任务数
+    "MaxConcurrentTasks": 2,                    // 单节点最大并发任务数（注册时上报给 Master）
+    "DelayBetweenRequestsMs": 1000              // 同一主机的最小请求间隔，实际还取插件与 robots.txt Crawl-delay 中的较大值
   }
 }
 ```
@@ -231,8 +230,8 @@ namespace MyCustomPlugin
 }
 ```
 
-3. 编译插件，将生成的DLL文件复制到Worker节点的`Plugins`目录
-4. 重启Worker节点，插件会自动加载
+3. 插件项目参照 `ThesisPlugin/ThesisPlugin.csproj` 开启 `EnableDynamicLoading`，并在 `CrawlerWorker.csproj` 的 `<CrawlerPlugin>` 中加一项，构建 Worker 时会复制到 `Plugins/<插件名>/`；也可以手动把插件输出目录复制过去
+4. 重启Worker节点，插件会自动加载（每个插件一个独立的加载上下文）
 
 > 💡 插件版本必须与CrawlerCore版本保持一致，否则可能出现兼容性问题
 
@@ -286,13 +285,13 @@ DistributedCrawler/
 ## ❓ 常见问题
 
 1. **Worker节点无法连接到Master**
-   - 检查Master和Worker的`NodeAuthToken`是否完全一致
+   - 检查Master和Worker的节点令牌是否完全一致（Worker 令牌错误时日志有 Fatal 并以退出码 1 退出）
    - 确认Master的5001端口已开放且未被占用
-   - Docker部署时，Windows/macOS使用`host.docker.internal`，Linux使用宿主机实际IP
+   - Docker部署时默认使用`host.docker.internal`（compose 已为 Linux 配置 host-gateway），Master 在其他机器上时设置 `MASTER_ENDPOINT`
    - 检查防火墙是否阻止了端口访问
 
 2. **插件加载失败**
-   - 确认插件DLL已复制到Worker的`Plugins`目录
+   - 确认插件已复制到Worker输出目录的`Plugins/<插件名>/`（Worker 启动日志会列出加载到的插件）
    - 检查插件是否正确实现了`ICrawlerPlugin`接口
    - 确认插件目标框架为.NET 10，且与CrawlerCore版本一致
    - 查看Worker日志获取详细错误信息

@@ -7,6 +7,8 @@
 > 文件路径相对于仓库根目录，`CrawlerWorker/` 下的文件省略这一前缀。
 >
 > 本报告只记录问题，不改代码。T5 的默认处理范围：P0/P1 全部修复，P2 修复范围局限、风险可控的，P3 只记录。T4（修 Master）在 T5 之前完成，需要两端配合的条目写明了依赖的 M 编号。
+>
+> **T5 的处理状态见 [§7](#7-t5-处理状态)**（2026-10-22）。下文的行号对应审阅基线，T5 之后已经变化。
 
 ## 1. 方法与证据等级
 
@@ -175,3 +177,64 @@ T5 修改时，以下设计应当保留：
 10. **`GrpcClientManager`**：线程安全的懒创建与重建通道、消息上限与 Master 对齐、Gzip 压缩、关闭时有超时。
 11. **服务注册抽成 `AddCrawlerWorker`**，Program.cs 与集成测试共用一套（T1），测试开启了 `ValidateScopes`/`ValidateOnBuild`。
 12. **T1 的测试基础设施**：`TcpFaultProxy` 区分“RST 崩溃”和“黑洞失联”两种故障；等待一律轮询加超时；`TestNodeInfoCollector` 只替换必须替换的部分；已知缺陷写成“修复后应有的行为”并 Skip，修好即成为回归测试。T5 修完 W-01、W-02 后直接去掉对应的 Skip。
+
+## 7. T5 处理状态
+
+> 2026-10-22，路线图 T5。提交：`621a570`（插件打包与隔离加载、ThesisPlugin 解析与契约测试）、`2659a82`（爬虫引擎：取消、robots、限速、重定向、重试、响应限制）、`3aec038`（连接管理、发件箱与停止流程）、`7d587d3`（Worker 侧集成测试）、`a25fa82`（配置、日志与部署文件）、`5993304`（节点资源采集）。
+> 测试名中标“集成”的在 `CrawlerCore.Tests/Integration/`，其余为单元测试。T5 改动了两处 Master 代码：`StartStreaming` 接受流后立即发送响应头（W-02），新建任务的默认起始 URL（W-07 ③）。
+
+### 7.1 状态汇总
+
+| 状态 | 编号 |
+|---|---|
+| 已修复 | P0：W-01；P1：W-02 – W-08；P2：W-09 – W-16、W-19、W-21 – W-25；P3（随上面的修改一并完成）：W-27 |
+| 已修复（个别子项按说明处理） | W-17（③ 只在启动时警告）、W-18（③ 只在引擎侧加超时）、W-20（③ 用 Retry-After 推迟整个主机代替单独的任务暂停） |
+| 部分修复（P3，随上面的修改顺带完成一部分） | W-26、W-29、W-30、W-32、W-33、W-34、W-35 |
+| 不修复，留给 T6 | W-08 中跨节点的总速率；W-28（与 M-19 一起设计分批回传） |
+| 不修复（P3，只记录） | W-31 |
+
+### 7.2 逐条状态
+
+| 编号 | 状态 | 做法 | 验证 |
+|---|---|---|---|
+| W-01 | 已修复（`2659a82`、`3aec038`） | ① 引擎：取消时直接抛出 `OperationCanceledException`，被取消的请求不再记成 499/500 页面；超时只在外部令牌未取消时记 408。② Worker 停止导致的取消不上报任何终态，任务在 Master 上保持 Running，流结束后 Master 判离线并重置（排队中的任务同样不上报）。③ `StopAsync`：不再接收任务、取消任务并等它们结束（`Task.WhenAll` 加超时）→ 等已完成任务的回执 → 写完发件箱、`RequestStream.CompleteAsync()`、等 Master 关闭流 → 停止后台循环 → 关闭通道 | 集成：`Worker正常停止时正在执行的任务由另一节点重新完成`（D2，去掉 Skip）；单元：`CrawlerEngineComplianceTests.CancelledWhileRequestInFlight_Throws` |
+| W-02 | 已修复（`3aec038`） | 单一连接循环（见 W-10）。流结束后按状态码处理：`PermissionDenied`/`NotFound` 清除会话、立即重新注册（不计入失败次数）；`Unauthenticated` 记 Fatal、退出码 1；其余指数退避（`RetryDelayMilliseconds` 起翻倍，上限 `MaxRetryDelaySeconds`=30 秒，±20% 抖动），连续失败超过 `MaxRetryAttempts` 次后重新注册。**Master 一行改动**：`StartStreaming` 校验会话、登记流后立即 `WriteResponseHeadersAsync`，Worker `await ResponseHeadersAsync`（超时 `MasterResponseTimeoutSeconds`）确认流被接受，失败计数只在确认后清零。重新注册失败也一直重试 | 集成：`Master重启后在线Worker自动重新注册并继续接收任务`（D1，去掉 Skip）；单元：`WorkerOutboxTests.ClassifyStreamEnd`、`Backoff_ExponentialWithCapAndJitter`、`CoordinatorStreamTests.AcceptedStream_WritesResponseHeadersAfterAttaching` |
+| W-03 | 已修复（`3aec038`、`7d587d3`） | 新增进程级发件箱 `WorkerOutbox`：通道只创建一次、跨越重连，写入失败的消息由下一条流先发；心跳与运行中的进度只在有流时入队；最终结果（先 `CrawlResult`、后 Completed 进度）按 TaskId 保存，收到 `ResultAck`（接受或丢弃）才删除，新流被确认后重发已写出未确认的结果，写出后超过 `ResultAckTimeoutSeconds`（60 秒，之后翻倍，上限 10 分钟）也重发；Failed 进度写出即完成（Master 不回执）。未实现“写入本地文件、进程崩溃后补发”（可选项） | 集成：`失联期间完成的任务_Worker发现半开连接并在重连后重发结果_Master只有一份结果`（每个页面只被请求一次）；单元：`WorkerOutboxTests`（9 个） |
+| W-04 | 已修复（`621a570`） | 插件项目 `EnableDynamicLoading`，对 CrawlerCore 的引用 `Private=false`、`ExcludeAssets=runtime;native`；Worker 对插件项目 `ReferenceOutputAssembly=false`；`AfterTargets="Build"`/`"Publish"` 两个目标把显式列出的插件（`<CrawlerPlugin>`，用 `GetTargetPath` 取输出目录）复制到 `Plugins/<插件名>/`，不再扫描整个解决方案；测试项目直接引用插件 | 单元：`PluginManagerTests.WorkerBuildOutput_ContainsLoadableThesisPlugin`；本机运行 Worker，日志出现“插件加载成功: ArXivThesisPlugin v1.4.0” |
+| W-05 | 已修复（`621a570`） | 作者取 `div.authors` 下的每个链接（“名 姓”，解码 HTML 实体），找不到时回退 `citation_author`（“姓, 名”转为“名 姓”）；删除整页文本上的回退正则 | 单元：`ArXivThesisCrawlerPluginTests`（多作者、单作者、带后缀、元数据回退）；真实请求（2026-10-22，2 个 abs 页面，间隔 15 秒，先检查 robots.txt）：两篇论文各解析出全部 8 位作者 |
+| W-06 | 已修复（`621a570`） | 摘要取 `blockquote.abstract` 去掉 `span.descriptor` 后的全部文本（保留链接文字），回退 `citation_abstract`；标题取 `h1.title` 去掉 descriptor，回退 `citation_title`；删除整页正则；标题取不到时解析失败；`Comment` 改为读取 `td.comments` | 单元：摘要含链接、有/没有 Comments 行、元数据回退、结构不匹配时失败；真实请求：两篇摘要完整（1136、1380 字符），不含 `Comments:`，也不是 `this https URL` |
+| W-07 | 已修复（`2659a82`） | 新增 `RobotsTxt`（RFC 9309：产品名 `DistributedCrawler` 或 `*` 组、最长匹配、`*`/`$`、Crawl-delay）与 `RobotsPolicy`（每个站点缓存 `RobotsCacheHours`=24 小时；4xx 视为无限制；5xx/429/网络错误视为暂时不可用，1 分钟内不请求该站点，页面记状态码 0）；起始 URL、子链接、每一跳重定向目标在请求前都检查，被禁止的不请求、不计入 MaxPages；Master 默认起始 URL 改为 `https://arxiv.org/list/cs.LG/recent`；插件中下载后的检查保留为防御，不再称为合规检查 | 单元：`RobotsTxtTests`、`CrawlerEngineComplianceTests`（禁止的起始 URL/子链接/重定向目标不请求，404 与 503 的处理）、`HostRateLimiterTests.CreateTaskDefaultStartUrl_IsAllowedListPage`；集成：`robots禁止的页面不被请求_也不计入结果`；真实请求：arXiv robots.txt 解析出 35 条规则、Crawl-delay 15 秒 |
+| W-08 | 已修复（单个 Worker 进程内，`2659a82`）；跨节点留给 T6 | 新增 `HostRateLimiter`：每个主机一个信号量串行发放许可，相邻请求间隔取前后两次要求的较大值；所有请求（robots.txt、重定向每一跳、重试）都经过它；间隔 = max(`DelayBetweenRequestsMs`, 插件 CrawlDelay, 任务配置 CrawlDelay, robots Crawl-delay)。compose 默认 1 个副本，`deployment.md` 写明采集 arXiv 时只运行 1 个 Worker | 单元：`HostRateLimiterTests`、`CrawlerEngineComplianceTests.ConcurrentTasks_ShareHostRateLimit`；真实请求：3 个请求用时 30 秒 |
+| W-09 | 已修复（`3aec038`） | 清理只由连接循环负责（每条流的资源是局部变量）；`StopAsync` 每一步各自限时并捕获异常，`base.StopAsync` 放进 finally；`Dispose` 改为 `override`，只做同步释放；删除终结器 | 集成：`TestWorker.StopAsync` 不再吞异常，所有端到端测试（包括 `CrashAsync` 后停止）通过 |
+| W-10 | 已修复（`3aec038`） | `RunConnectionLoopAsync` 取代注册事件、`StartStreamingAsync`、`HandleStreamReconnectAsync` 的互相递归；每条流的 CTS、心跳定时器、读写任务都是本轮局部变量，本轮结束时等三个循环都结束并取得断开原因；停止时先禁止重连；删除没有订阅者的事件 | 集成：D1、断流重连、失联恢复等用例；没有另写模拟 `CrawlerCoordinatorClient` 的单元测试（集成测试已覆盖“只建一条新流”“停止后不再重连”） |
+| W-11 | 已修复（`3aec038`、`a25fa82`、`7d587d3`） | 删除 TCP 预检；启动时 Master 不可达、注册被拒绝都按退避一直重试；只有令牌错误（`Unauthenticated`）、参数非法、启动前校验失败（令牌为空或为 `test-token`、Master 地址无效）才退出，退出码 1；`Program.cs` 的异常也返回 1 | 集成：`Master不可达时启动的Worker持续重试_Master可达后注册上线并上报并发上限`、`令牌错误的Worker不再重试_以非0退出码退出`；单元：`WorkerConfigurationTests.Validate_*`；本机实测：不设令牌时退出码 1，Master 不可达时持续重试 |
+| W-12 | 已修复（`3aec038`） | `GrpcClientManager` 的 `SocketsHttpHandler` 开启 keepalive（`KeepAlivePingDelaySeconds`/`KeepAlivePingTimeoutSeconds`，默认 15/30 秒，`Always`） | 单元：`StreamingAndHeartbeatTests.ClientHandler_EnablesKeepAlive`；集成：W-03 的测试中 `Hang()` 后代理上出现新的连接（`TcpFaultProxy.TotalConnectionCount`） |
+| W-13 | 已修复（`a25fa82`、`3aec038`） | 删掉自建的配置，改为 `WorkerConfiguration.CreateHostBuilder`：`UseContentRoot(AppContext.BaseDirectory)`，简写环境变量作为最后加入的配置源；Serilog 从主机配置读取；出口 IP 探测用 `GrpcSettings:MasterEndpoint`；`GrpcSettings.MasterEndpoint` 默认值改为 `http://localhost:5001` | 单元：`WorkerConfigurationTests`（简写变量覆盖 appsettings、内容根、空白值不生效）；本机实测：在仓库根目录运行 Worker 能读到 appsettings.json |
+| W-14 | 已修复（`3aec038`、`a25fa82`） | 启动日志只记“已通过环境变量设置节点令牌（长度 N）”；客户端拦截器不再打印令牌 | 单元：`WorkerConfigurationTests.DescribeAliases_DoesNotRevealToken`；本机实测：日志中没有令牌字符 |
+| W-15 | 已修复（`2659a82`） | 爬虫处理器默认校验证书；`CrawlerSettings:IgnoreCertificateErrors`（默认 false）打开时才忽略，并记警告 | 单元：`HostRateLimiterTests.CrawlerHandler_ValidatesCertificatesByDefault` |
+| W-16 | 已修复（`5993304`） | Windows CPU 使用率改用 `GetSystemTimes` 两次采样差分 | 单元（仅 Windows）：`ResourceUsageTests.WindowsCpuUsage_IsSampled`（忙循环后大于 0，没有警告日志） |
+| W-17 | 已修复（`5993304`）；③ 只警告 | ① 有 cgroup v2 `cpu.stat` 时按 `usage_usec` 增量 ÷（时间 × `cpu.max` 可用核数）计算；② 内存减去 `memory.stat` 的 `inactive_file`；③ cgroup v1（或不支持的平台）首次采集时记一次警告，说明按整机口径；④ `/proc/stat` 总时间不再计入 guest 列。解析与计算抽成 `ResourceUsageCalculator` | 单元：`ResourceUsageTests`；Docker 中 `--cpus=1` 跑满的人工复测见交付说明 |
+| W-18 | 已修复（`621a570`、`2659a82`）；③ 只在引擎侧 | ① 每个插件一个 `AssemblyLoadContext`，按 deps.json 解析插件依赖，CrawlerCore 与 Worker 共享；② `ReflectionTypeLoadException` 时使用可加载的类型并记录原因；③ 引擎调用插件时加超时（`PluginTimeoutSeconds`=30），超时或异常时该页没有解析数据、任务继续；插件接口没有增加带取消令牌的重载，陷入死循环的插件仍占用一个线程；④ 按路径排序加载，重名记 Error；⑤ 新表建好后整体替换；⑥ 插件目录可配置，启动时加载 | 单元：`PluginManagerTests`（损坏的 DLL、重名、目录不存在、重新加载期间不返回 null）、`CrawlerEngineComplianceTests.PluginTimeoutOrException_PageKeptAndTaskContinues` |
+| W-19 | 已修复（`2659a82`） | 每一跳重定向目标先做循环检测与作用域检查（起始页只要求同主机；跟随而来的页面还要经过插件 `ShouldFollowLink`），再全局去重，已存在就放弃本页（不计入 MaxPages），然后在下一跳请求前检查 robots；失败页面的 `FinalUrl` 为最后请求的地址 | 单元：`RedirectsToSameTarget_CrawledOnce`、`LinkRedirectToRejectedUrl_NotRequested`、`FailedPage_HasFinalUrl` |
+| W-20 | 已修复（`2659a82`）；③ 改为推迟整个主机 | ① 408、429、5xx、超时、网络错误重试（`MaxRequestRetries`=2，指数退避）；429/503 带 `Retry-After` 时按它推迟该主机的所有请求（上限 5 分钟），重试用完仍会推迟；② 没有 HTTP 响应时状态码记 0；③ 没有单独实现“连续多次 429 暂停任务”，由按主机推迟代替 | 单元：`ServiceUnavailableWithRetryAfter_Retried`、`TooManyRequests_RetriesExhausted`、`NetworkError_RecordedAsNoResponse` |
+| W-21 | 已修复（`2659a82`） | ① 每个请求一个链接的超时令牌，覆盖读取正文；`HttpClient.Timeout` 不再使用；② 只读取 `text/html`、`application/xhtml+xml`（没有 Content-Type 时按 HTML），正文超过 `MaxResponseBytes`（5 MB）不解析；③ `SameHostOnly`（默认 true）在插件 `ShouldFollowLink` 之前检查 | 单元：`NonHtml_NotParsed`、`OversizedBody_NotParsed`、`BodyReadTimeout_RecordedAs408AndTaskContinues`、`SameHostOnly_ByDefault` |
+| W-22 | 已修复（`3aec038`） | ① 收到任务不再上报 Pending；② 注册信息填入 `MaxConcurrentTasks`；③ 单元测试改名并改断言。M-02 的集成测试改为让节点上报 0（不限）来构造本地排队 | 单元：`WorkerHostedServiceTests.ProcessNewTask_QueuesWithoutReportingPending`、`NodeRegistrationTests.CollectNodeRegistrationAsync_IncludesMaxConcurrentTasks`；集成：`Master不可达时启动的Worker…上报并发上限`、`Worker本地排队的任务在节点崩溃后由另一节点完成` |
+| W-23 | 已修复（`3aec038`） | `_acceptedTasks`（排队中与执行中）按 TaskId 去重：执行中的任务再次下发时补发一次当前进度；已执行完、结果待确认的任务再次下发时补发结果，不重新执行 | 单元：`ProcessNewTask_DuplicateTaskId_AcceptedOnce`、`ProcessNewTask_WithPendingResult_ResendsInsteadOfExecuting`；集成：`短暂断流后Worker用旧会话重连_…`（现在只执行一次） |
+| W-24 | 已修复（`a25fa82`）；未在 Docker 中验证 | ① 新增 `.dockerignore`；② 还原层复制插件项目，只做一次 `publish --no-restore`；③ `USER $APP_UID`，删除 `EXPOSE 5002` 与令牌默认值；④ compose 令牌 `${NODE_AUTH_TOKEN:?…}`（`.env` 已加入 `.gitignore`），只保留 `restart: unless-stopped`，加 `extra_hosts`、日志轮转，默认 1 个副本，不再挂载本机 appsettings.json；⑤ `deployment.md` 说明 NodeId 的取法（没有做持久化） | 本机没有 Docker，人工复测步骤见交付说明 |
+| W-25 | 已修复（`621a570`） | `ConvertValueForProto` 移到 `CrawlerCore.Common.ParsedDataConverter`（Worker 上报与测试共用）；新增手写夹具的解析测试与契约断言 `ParsedDataContract.AssertSatisfiedBy`（T6 的 API 插件复用） | 单元：`ArXivThesisCrawlerPluginTests.Output_SatisfiesParsedDataContract`、`ParsedDataConverterTests` |
+| W-26 | 部分修复（P3，`3aec038`、`2659a82`） | ① 每个任务的第一条进度总会上报；② 总页数改为 min(已爬 + 队列, MaxPages)，最终进度用实际页数；④ 进度带本节点 NodeId。③ 节流间隔仍读 `SignalRSettings:TaskProgressThrottleSeconds` | 单元：`CrawlerEngineComplianceTests.ProgressTotal_ReflectsQueue` |
+| W-27 | 已修复（P3，随 W-03，`3aec038`） | 先发 `CrawlResult`、后发 Completed 进度，两条一起保留到收到回执 | 单元：`WorkerOutboxTests.ResultQueuedWhileDisconnected_SentAfterReconnect`；集成：“进度不回退”测试 |
+| W-28 | 不修复，留给 T6 | 与 M-19 一起设计分批回传 | — |
+| W-29 | 部分修复（P3，`621a570`） | ② Comment、④ 日志级别与异常对象、⑤ 回退正则随 W-05/W-06 完成；ArXivId 优先取 `citation_arxiv_id`，能解析旧式编号（但 `ShouldFollowLink` 仍只跟随新式编号，③ 未完成）；① DOI 口径不变（仍是页面上第一个 doi.org 链接，通常是 arXiv 分配的 `10.48550`） | — |
+| W-30 | 部分修复（P3，`2659a82`） | ① 去重集合满时只停止入队；④ 插件异常时保留 HTTP 状态码；⑤ `BrowsingContext` 用后释放（同一份 HTML 仍被解析两次）；⑥ User-Agent 统一取 `DefaultUserAgent`，默认值带项目地址；③ 只做了“任务配置中的 CrawlDelay 可以调大请求间隔”，插件仍拿不到任务配置；② URL 规范化仍整体转小写（改动会影响去重结果，未改） | — |
+| W-31 | 不修复（P3） | — | — |
+| W-32 | 部分修复（P3，`621a570`） | ① 转换器读写不再递归；② 标量按不变区域性输出、时间用 “O” 格式（规则写进 CLAUDE.md）；③ 实体构造函数中的日志未删（与 M-28 一起） | 单元：`ParsedDataConverterTests` |
+| W-33 | 部分修复（P3，`3aec038`、`621a570`） | 删除没有订阅者的事件、`TryGetNextTask`、DEBUG 进度模拟器、`Http3UnencryptedSupport` 开关、TCP 预检、Worker 对 HtmlAgilityPack 的引用；消费循环改为 `Channel<CrawlerTask>`。`WorkerControl` 服务端、`AddGrpc`、`Grpc.Core`、`PerformanceCounter` 包、AngleSharp 升级、未使用的 Helper 类与常量、`IPluginManager` 的命名空间未改 | — |
+| W-34 | 部分修复（P3，`a25fa82`、`2659a82`） | 默认日志级别 Information（Microsoft/Grpc/System 为 Warning）；删除逐链接、逐条消息的日志；`LogHelper` 的 SourceContext 与文件 sink 未改 | — |
+| W-35 | 部分修复（P3，`621a570`、`3aec038`） | ② `TestWorker.StopAsync` 不再吞异常；③ `TcpFaultProxy` 登记连接后再检查一次模式，并统计累计连接数；④ 删除重复引用与错误注释；⑤ 增加请求进行中取消的测试，改了 `ProcessNewTask` 测试；① 没有让 `TestWorker` 走 `Program.cs`，改为给 `WorkerConfiguration` 写单元测试；“容量上限”测试仍然只断言不抛异常 | 全部测试 |
+
+### 7.3 配置与部署的变化
+
+- Worker `appsettings.json` 的令牌改为空，`MasterEndpoint` 默认 `http://localhost:5001`（在本机运行 Worker 不用再改配置）；Docker 镜像通过 `MASTER_ENDPOINT` 默认连接 `http://host.docker.internal:5001`。令牌必须通过 `NODE_AUTH_TOKEN` 或 `GrpcSettings__NodeAuthToken` 提供，详见 `docs/project/deployment.md`。
+- 新增配置项：`GrpcSettings` 的 `MaxRetryDelaySeconds`、`MasterResponseTimeoutSeconds`、`ResultAckTimeoutSeconds`（Worker 也使用 `KeepAlivePingDelaySeconds`/`KeepAlivePingTimeoutSeconds`）；`CrawlerSettings` 的 `RobotsCacheHours`、`MaxRequestRetries`、`MaxResponseBytes`、`SameHostOnly`、`PluginTimeoutSeconds`、`PluginDirectory`、`IgnoreCertificateErrors`。
+- Worker 输出目录的插件布局改为 `Plugins/<插件名>/`；旧版本留在 `Plugins/` 下的单个 DLL 仍会加载，重名时以子目录中的为准（记 Error 日志）。
