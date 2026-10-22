@@ -120,10 +120,12 @@ namespace CrawlerMaster.WPF.ViewModels
                         }
                         else
                         {
-                            // 只更新那些事件可能没有覆盖的基础属性。
+                            // 状态以库中为准：任务状态的写入已统一按状态机执行（终态不回退），
+                            // 故障恢复、调度器修改的状态也会反映出来。
                             // TotalPages 由进度事件维护（MaxPages=0 表示不限页数），不能用 MaxPages 覆盖，否则进度会跳回 0%
                             existing.TaskName = task.TaskName;
                             existing.AssignedNode = task.AssignedNode;
+                            existing.Status = task.Status;
                         }
                     }
                 });

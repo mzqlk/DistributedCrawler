@@ -12,7 +12,8 @@ using System.Threading.Tasks;
 namespace CrawlerMaster.WPF.Services
 {
     /// <summary>
-    /// 节点管理服务，负责节点的注册、心跳更新和状态管理
+    /// 节点管理服务，负责节点的注册、心跳更新和状态管理。
+    /// 节点状态事件只在这里、且只在库中状态保存之后发布；发布时不持有写锁，订阅者不会在锁内执行
     /// </summary>
     public class NodeManagementService : INodeManagementService
     {
@@ -28,10 +29,13 @@ namespace CrawlerMaster.WPF.Services
         }
 
         /// <summary>
-        /// 注册节点
+        /// 注册节点（已存在时更新机器名、IP 与硬件信息，并置为 Online）
         /// </summary>
         public async Task<NodeInfo> RegisterNodeAsync(NodeInfo nodeInfo)
         {
+            NodeStatusChangedEventArgs? statusChanged = null;
+            NodeInfo resultNode;
+
             await _writeLock.WaitAsync();
             try
             {
@@ -39,8 +43,6 @@ namespace CrawlerMaster.WPF.Services
                     .FirstOrDefaultAsync(n => n.NodeId == nodeInfo.NodeId);
 
                 NodeStatus oldStatus;
-                NodeInfo resultNode;
-
                 if (existNode != null)
                 {
                     oldStatus = existNode.Status;
@@ -48,6 +50,9 @@ namespace CrawlerMaster.WPF.Services
                     existNode.LastHeartbeat = DateTime.UtcNow;
                     existNode.MachineName = nodeInfo.MachineName;
                     existNode.IpAddress = nodeInfo.IpAddress;
+                    // 硬件可能变化（例如容器调整了内存限制），负载均衡按最新值计算
+                    existNode.CpuCores = nodeInfo.CpuCores;
+                    existNode.TotalMemoryGb = nodeInfo.TotalMemoryGb;
                     resultNode = existNode;
                 }
                 else
@@ -61,19 +66,21 @@ namespace CrawlerMaster.WPF.Services
 
                 await _dbContext.SaveChangesAsync();
 
-                // 发布状态变更事件
                 if (oldStatus != NodeStatus.Online)
                 {
-                    _eventAggregator.Publish(this,
-                        new NodeStatusChangedEventArgs(resultNode.NodeId, oldStatus, NodeStatus.Online, resultNode));
+                    statusChanged = new NodeStatusChangedEventArgs(resultNode.NodeId, oldStatus, NodeStatus.Online, resultNode);
                 }
-
-                return resultNode;
             }
             finally
             {
                 _writeLock.Release();
             }
+
+            if (statusChanged != null)
+            {
+                _eventAggregator.Publish(this, statusChanged);
+            }
+            return resultNode;
         }
 
         public async Task<List<NodeInfo>> GetActiveNodesAsync()
@@ -87,6 +94,9 @@ namespace CrawlerMaster.WPF.Services
 
         public async Task<bool> UpdateNodeHeartbeatAsync(NodeInfo nodeInfo)
         {
+            NodeStatusChangedEventArgs statusEvent;
+            bool saved;
+
             await _writeLock.WaitAsync();
             try
             {
@@ -99,30 +109,24 @@ namespace CrawlerMaster.WPF.Services
                 node.ActiveTasks = nodeInfo.ActiveTasks;
                 node.LastHeartbeat = nodeInfo.LastHeartbeat;
 
-                // 如果节点当前是 Offline，收到心跳后自动恢复为 Online
+                // 心跳只经由双向流到达：节点当前是 Offline（例如健康检查误判后又恢复），收到心跳即恢复为 Online
                 var oldStatus = node.Status;
                 if (oldStatus == NodeStatus.Offline)
                 {
                     node.Status = NodeStatus.Online;
-
-                    // 保存后发布状态变更事件
-                    await _dbContext.SaveChangesAsync();
-
-                    _eventAggregator.Publish(this,
-                        new NodeStatusChangedEventArgs(node.NodeId, oldStatus, NodeStatus.Online, node));
-
-                    return true;
                 }
 
-                _eventAggregator.Publish(this,
-                    new NodeStatusChangedEventArgs(node.NodeId, node.Status, node.Status, node));
-
-                return await _dbContext.SaveChangesAsync() > 0;
+                saved = await _dbContext.SaveChangesAsync() > 0;
+                statusEvent = new NodeStatusChangedEventArgs(node.NodeId, oldStatus, node.Status, node);
             }
             finally
             {
                 _writeLock.Release();
             }
+
+            // 保存之后再发布（界面据此刷新资源曲线；Offline → Online 时也是状态变化通知）
+            _eventAggregator.Publish(this, statusEvent);
+            return saved;
         }
 
         public async Task<int> RemoveInactiveNodesAsync(TimeSpan timeout)
@@ -144,8 +148,10 @@ namespace CrawlerMaster.WPF.Services
             }
         }
 
-        public async Task<int> MarkInactiveNodesAsOfflineAsync(TimeSpan timeout)
+        public async Task<IReadOnlyList<string>> MarkInactiveNodesAsOfflineAsync(TimeSpan timeout)
         {
+            var events = new List<NodeStatusChangedEventArgs>();
+
             await _writeLock.WaitAsync();
             try
             {
@@ -154,35 +160,35 @@ namespace CrawlerMaster.WPF.Services
                     .Where(n => n.Status == NodeStatus.Online && n.LastHeartbeat < cutoffTime)
                     .ToListAsync();
 
-                if (inactiveNodes.Count == 0) return 0;
+                if (inactiveNodes.Count == 0) return Array.Empty<string>();
 
-                var nodeStatusPairs = inactiveNodes.Select(n => new { n, OldStatus = n.Status }).ToList();
-                foreach (var pair in nodeStatusPairs)
+                foreach (var node in inactiveNodes)
                 {
-                    pair.n.Status = NodeStatus.Offline;
+                    events.Add(new NodeStatusChangedEventArgs(node.NodeId, node.Status, NodeStatus.Offline, node));
+                    node.Status = NodeStatus.Offline;
                 }
 
                 await _dbContext.SaveChangesAsync();
-
-                foreach (var pair in nodeStatusPairs)
-                {
-                    _eventAggregator.Publish(this,
-                        new NodeStatusChangedEventArgs(pair.n.NodeId, pair.OldStatus, NodeStatus.Offline, pair.n));
-                }
-
-                return inactiveNodes.Count;
             }
             finally
             {
                 _writeLock.Release();
             }
+
+            foreach (var statusEvent in events)
+            {
+                _eventAggregator.Publish(this, statusEvent);
+            }
+            return events.Select(e => e.NodeId).ToList();
         }
 
         /// <summary>
-        /// 标记单个节点为离线
+        /// 标记单个节点为离线（已是离线时不重复发布事件）
         /// </summary>
         public async Task MarkSingleNodeAsOfflineAsync(string nodeId)
         {
+            NodeStatusChangedEventArgs? statusChanged = null;
+
             await _writeLock.WaitAsync();
             try
             {
@@ -192,13 +198,16 @@ namespace CrawlerMaster.WPF.Services
                 var oldStatus = node.Status;
                 node.Status = NodeStatus.Offline;
                 await _dbContext.SaveChangesAsync();
-
-                _eventAggregator.Publish(this,
-                    new NodeStatusChangedEventArgs(nodeId, oldStatus, NodeStatus.Offline, node));
+                statusChanged = new NodeStatusChangedEventArgs(nodeId, oldStatus, NodeStatus.Offline, node);
             }
             finally
             {
                 _writeLock.Release();
+            }
+
+            if (statusChanged != null)
+            {
+                _eventAggregator.Publish(this, statusChanged);
             }
         }
     }

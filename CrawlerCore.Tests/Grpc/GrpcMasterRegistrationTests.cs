@@ -156,35 +156,74 @@ namespace CrawlerCore.Tests.Grpc
         }
 
         /// <summary>
-        /// 测试重复注册同一 NodeId 应返回失败
+        /// 同一 NodeId 没有活跃流时再次注册（Worker 崩溃后重启）：换成新会话，旧会话失效（M-03）
         /// </summary>
         [Fact]
-        public async Task RegisterNode_DuplicateNodeId_ReturnsFailure()
+        public async Task RegisterNode_SameNodeIdWithoutActiveStream_ReplacesSession()
         {
-            // Arrange
             const string nodeId = "node-dup-001";
-            var request1 = new NodeRegistration
-            {
-                NodeId = nodeId,
-                MachineName = "FirstMachine",
-                IpAddress = "192.168.1.200"
-            };
-            var request2 = new NodeRegistration
-            {
-                NodeId = nodeId,
-                MachineName = "SecondMachine",
-                IpAddress = "192.168.1.201"
-            };
             var headers = new Metadata { { "authorization", $"Bearer {ValidToken}" } };
 
-            // Act
-            var response1 = await _client.RegisterNodeAsync(request1, headers).ResponseAsync;
-            var response2 = await _client.RegisterNodeAsync(request2, headers).ResponseAsync;
+            var response1 = await _client.RegisterNodeAsync(new NodeRegistration { NodeId = nodeId, MachineName = "FirstMachine", IpAddress = "192.168.1.200" }, headers).ResponseAsync;
+            var response2 = await _client.RegisterNodeAsync(new NodeRegistration { NodeId = nodeId, MachineName = "SecondMachine", IpAddress = "192.168.1.201" }, headers).ResponseAsync;
 
-            // Assert
             Assert.True(response1.Success);
+            Assert.True(response2.Success);
+            Assert.NotEqual(response1.SessionId, response2.SessionId);
+            Assert.False(_sessionManager.ValidateSession(nodeId, response1.SessionId));
+            Assert.True(_sessionManager.ValidateSession(nodeId, response2.SessionId));
+        }
+
+        /// <summary>
+        /// 同一 NodeId 仍有活跃流时再次注册：拒绝，防止两个 NodeId 相同的 Worker 互相踢下线（M-03）
+        /// </summary>
+        [Fact]
+        public async Task RegisterNode_SameNodeIdWithActiveStream_ReturnsFailure()
+        {
+            const string nodeId = "node-dup-002";
+            var headers = new Metadata { { "authorization", $"Bearer {ValidToken}" } };
+            var response1 = await _client.RegisterNodeAsync(new NodeRegistration { NodeId = nodeId, MachineName = "FirstMachine", IpAddress = "192.168.1.200" }, headers).ResponseAsync;
+            Assert.True(response1.Success);
+
+            using var call = _client.StartStreaming(new Metadata
+            {
+                { "node-id", nodeId },
+                { "session-id", response1.SessionId }
+            });
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!_service.IsNodeConnected(nodeId) && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(20);
+            }
+            Assert.True(_service.IsNodeConnected(nodeId), "双向流应已建立");
+
+            var response2 = await _client.RegisterNodeAsync(new NodeRegistration { NodeId = nodeId, MachineName = "SecondMachine", IpAddress = "192.168.1.201" }, headers).ResponseAsync;
+
             Assert.False(response2.Success);
             Assert.Equal("Node already has an active session", response2.Message);
+            Assert.True(_sessionManager.ValidateSession(nodeId, response1.SessionId), "被拒绝的注册不应影响原会话");
+
+            await call.RequestStream.CompleteAsync();
+        }
+
+        /// <summary>
+        /// 注册时声明的并发上限保存在会话中，供调度使用（M-06）
+        /// </summary>
+        [Fact]
+        public async Task RegisterNode_StoresMaxConcurrentTasks()
+        {
+            var headers = new Metadata { { "authorization", $"Bearer {ValidToken}" } };
+            var response = await _client.RegisterNodeAsync(new NodeRegistration
+            {
+                NodeId = "node-capacity",
+                MachineName = "CapacityMachine",
+                IpAddress = "10.0.0.2",
+                MaxConcurrentTasks = 3
+            }, headers).ResponseAsync;
+
+            Assert.True(response.Success);
+            Assert.Equal(3, _service.GetMaxConcurrentTasks("node-capacity"));
+            Assert.Equal(0, _service.GetMaxConcurrentTasks("unknown-node"));
         }
 
         /// <summary>

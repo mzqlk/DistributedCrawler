@@ -29,6 +29,9 @@ message NodeRegistration {
   int32 cpu_cores = 3;
   double total_memory_gb = 4;
   string ip_address = 5;
+  // 节点同时执行的任务数上限（Worker 的 CrawlerSettings:MaxConcurrentTasks）。
+  // 0 或缺省（旧版 Worker）表示不限，Master 只按已分配任务数均衡
+  int32 max_concurrent_tasks = 6;
 }
 
 /// <summary>
@@ -164,6 +167,15 @@ message TaskControl {
 }
 
 /// <summary>
+/// 结果回执：Master 处理完某个任务的 CrawlResult 后发送，Worker 收到后不必再重发该结果
+/// </summary>
+message ResultAck {
+  string task_id = 1;
+  // true：结果已落库（包括此前已落库的重复结果）；false：结果被丢弃（任务不存在或已分配给其他节点）
+  bool accepted = 2;
+}
+
+/// <summary>
 /// Master向Worker发送的消息统一封装体
 /// </summary>
 message FromMaster {
@@ -171,5 +183,6 @@ message FromMaster {
     CrawlerTask new_task = 1;
     TaskControl task_control = 2;
     SystemConfig system_config = 3;
+    ResultAck result_ack = 4;
   }
 }

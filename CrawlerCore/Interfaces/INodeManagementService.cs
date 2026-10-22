@@ -41,8 +41,8 @@ namespace CrawlerCore.Interfaces
         /// 将超时无心跳的节点标记为离线状态
         /// </summary>
         /// <param name="timeout">心跳超时时间</param>
-        /// <returns>被标记为离线的节点数量</returns>
-        Task<int> MarkInactiveNodesAsOfflineAsync(TimeSpan timeout);
+        /// <returns>被标记为离线的节点ID（调用方据此断开这些节点的双向流）</returns>
+        Task<IReadOnlyList<string>> MarkInactiveNodesAsOfflineAsync(TimeSpan timeout);
 
         /// <summary>
         /// 直接标记单个节点为离线状态
