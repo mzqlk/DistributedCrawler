@@ -8,6 +8,7 @@
 |---|---|
 | 了解项目是什么、做到哪一步、有哪些已知问题 | [`project/overview.md`](project/overview.md) |
 | 接下来做什么、按什么规则推进、做过哪些决定 | [`roadmap.md`](roadmap.md) |
+| 修复 Master 问题前查看审阅结论（编号 M-xx、触发场景、修复建议） | [`review/master.md`](review/master.md) |
 | 改动通信/调度/引擎/插件/UI 前了解设计约定 | [`project/design.md`](project/design.md) |
 | 运行、Docker、端口、环境变量、配置项 | [`project/deployment.md`](project/deployment.md) |
 | 原 16 周计划里还有哪些没做（流程设计器、插件 UI、压测、文档…） | [`project/dev-plan.md`](project/dev-plan.md) |
@@ -26,6 +27,8 @@ docs/
 │   ├── design.md                架构、流程、proto、双向流可靠性、各服务与组件要点、未落地设计
 │   ├── dev-plan.md              16 周开发计划精简版 + 完成状态
 │   └── deployment.md            运行/部署命令、环境变量、端口、配置项
+├── review/
+│   └── master.md                Master 端代码审阅报告（T2）：按 P0–P3 排序的问题清单（M-01 起编号）
 ├── analysis/
 │   ├── README.md                数据分析模块说明、输入 JSON 契约、流程、实验结果、性能
 │   ├── sample-export.json       Master 导出 JSON 示例（2 条）

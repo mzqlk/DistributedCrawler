@@ -41,6 +41,7 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
 | 阶段四.3：插件系统 | ⚠️ 部分 | Worker 端加载已实现；Master 端插件管理 UI、`ValidateConfig`、NewsPlugin、AppDomain 隔离未做 |
 | 阶段五：测试/优化/部署 | ⚠️ 部分 | Worker Dockerfile + compose、端到端集成测试已有；Master Dockerfile、MemoryManager、压测报告、用户/开发指南未做 |
 | 端到端集成测试（路线图 T1） | ✅ 2026-10-22 | `CrawlerCore.Tests/Integration/`：进程内 Master 后台服务 + 真实 Worker + Kestrel 静态站点 + 临时 SQLite。覆盖注册与心跳、任务分配→爬取→落库且进度不回退、Worker 崩溃与失联后的故障转移、Master 重启后恢复 Pending 任务；另有 4 个用 Skip 标记的已知缺陷测试（见 §4 第 8 条） |
+| Master 代码审阅（路线图 T2） | ✅ 2026-10-22（只出报告） | [`docs/review/master.md`](../review/master.md)：40 个问题，其中 P0 2 个、P1 7 个、P2 15 个、P3 16 个，编号 M-01 – M-40，由 T4 修复；见 §4 第 9 条 |
 | 任务书：CNKI 等多源插件 | ❌ 未实现 | 只有 arXiv |
 | 任务书：作者合作网络、主题层次树、文档降维散点图 | ❌ 未实现 | 分析模块只做了 LDA；合作网络可参考 `docs/analysis/reference-flask-app/` |
 | 采集与分析端到端自动联动 | ❌ 文件级对接 | 论文第 7 章列为局限 |
@@ -63,7 +64,7 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
 5. 两模块仅文件级对接，未形成实时数据链路。
 6. 展望方向（答辩 PPT）：更多数据源插件（IEEE、Springer）、作者合作网络与机构影响力分析、热点趋势预测与个性化推荐、性能优化。
 7. 负载均衡中的“网络得分/专业化得分”目前是常量（20/10），论文描述的“按网络延迟/同类任务经验计算”未实现。
-8. **端到端集成测试发现的缺陷**（2026-10-22，T1）。D1–D4 已用 `CrawlerCore.Tests/Integration/MasterWorkerKnownDefectTests.cs` 中的测试复现，测试暂时 Skip，修复后去掉 Skip 即为回归测试；括号内是建议的严重度，以 T2/T3 审阅报告为准。
+8. **端到端集成测试发现的缺陷**（2026-10-22，T1）。D1–D4 已用 `CrawlerCore.Tests/Integration/MasterWorkerKnownDefectTests.cs` 中的测试复现，测试暂时 Skip，修复后去掉 Skip 即为回归测试；括号内是建议的严重度，以 T2/T3 审阅报告为准。Master 部分已经由 T2 复核并编号，对照见 [`docs/review/master.md` §5](../review/master.md#5-与-t1-已发现缺陷的对照)：D3 → M-03，D4 → M-01（定为 P0），写库竞态 → M-02（证实会丢任务，定为 P0），重复事件 → M-25，连接字符串 → M-26，“已完成但无数据” → M-11。
    - **D1 Master 重启后，在线的 Worker 不会重新注册**（P1）。`WorkerHostedService.StartStreamingAsync` 在创建流调用后（服务端尚未响应）就把 `_reconnectAttempts` 清零，计数永远到不了 `MaxRetryAttempts`，Worker 一直用失效会话重连：测试中 20 秒内被拒约 100 次，始终不会重新注册。
    - **D2 Worker 正常停止（Ctrl+C、`docker stop`）时，正在执行的任务不会被重新调度**（P1）。停止时任务被取消，但引擎把被取消的请求记成 499 页面后正常结束，于是上报 Completed（取消发生在其他位置时上报 Failed）；故障恢复只处理 Running 任务。另外，`CleanupStreamResourcesAsync` 先取消流再等发送队列清空，结果消息会丢：测试中 Master 显示“已完成”，但没有任何数据。
    - **D3 同一 NodeId 的 Worker 崩溃后重启，30 分钟内无法注册**（P1）。流断开时 Master 不移除 `SessionManager` 里的会话，`RegisterNode` 返回 “Node already has an active session”，Worker 随即退出。此外 `SessionManager` 是 `BackgroundService`，却只按单例注册，过期清理循环从不运行。手动重开 Worker，或容器崩溃后被 `restart_policy` 拉起（NodeId 不变）时都会遇到。
@@ -76,6 +77,15 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
    - **数据库连接字符串的配置不生效**（P3）。代码读 `Database:ConnectionString`（`DatabaseSettings.SectionName = "Database"`），`appsettings.json` 写的是 `ConnectionStrings:ConnectionString`；目前碰巧与默认值相同。
    - **每个任务的第一条引擎进度不会上报**（P3）。进度节流的 `AddOrUpdate` 走新增分支时没有设置 `shouldReport`。
    - **节点状态事件重复发布**（P3）。注册时 Online 事件发布 3 次，断流时 Offline 事件发布 2–3 次（`RegisterNode`、`RegisterNodeAsync`、`StartStreaming`，以及两次 `CleanupNodeStreamAsync` 调用）。
+9. **Master 代码审阅发现的问题**（2026-10-22，T2）。完整清单、触发场景和修复建议见 [`docs/review/master.md`](../review/master.md)，由 T4 修复。P0/P1 如下：
+   - **M-01 节点令牌完全不校验**（P0，即 D4），启用拦截器前要先完成 M-09（拦截器把所有异常都转成 Internal）。
+   - **M-02 在 Worker 本地排队的任务，节点离线后永久丢失**（P0，临时探针已复现）。库中这类任务是“Pending + 已分配节点”，故障恢复和重启恢复都不会处理。
+   - **M-03 同一 NodeId 崩溃重启后无法注册**（P1，即 D3）。
+   - **M-04 节点被判离线后，旧节点不会被隔离**（P1，已复现）。短暂断流后，同一任务执行两次，库中有两份结果。
+   - **M-05 Master 发现不了半开连接**（P1，待验证）。失联节点恢复后，可能永久无法重新上线。
+   - **M-06 一次创建多个任务时，全部分给同一节点**（P1，已复现）。负载均衡不看节点上已分配的任务数。
+   - **M-07 内存阈值写死为 60%**（P1）。Windows 上 Worker 上报的是整机内存，常见开发机上节点永远不合格，任务永远不下发。
+   - **M-08 切换过页面后，数据查看页不再自动刷新**（P1）。视图卸载时把单例 ViewModel Dispose 掉了。
 
 ## 5. 文档与代码的差异（以代码为准）
 
