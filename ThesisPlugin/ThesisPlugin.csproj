@@ -1,9 +1,12 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- 插件按 .NET 官方的插件写法构建：输出目录包含插件自己的依赖（HtmlAgilityPack）和 deps.json，
+         Worker 用独立的 AssemblyLoadContext 加载（W-04、W-18） -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
   </PropertyGroup>
 
   <ItemGroup>
@@ -11,7 +14,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj" />
+    <!-- 插件接口所在的程序集由 Worker 提供，不随插件复制，保证 ICrawlerPlugin 类型一致 -->
+    <ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime;native</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>

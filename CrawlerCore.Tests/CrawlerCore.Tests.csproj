@@ -25,14 +25,12 @@
   </ItemGroup>
 
   <ItemGroup>
-	<!-- 仅引用Core共享库，不引用Master/Worker端项目，避免兼容性问题 -->
-	<ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj" />
     <ProjectReference Include="..\CrawlerMaster.WPF\CrawlerMaster.WPF.csproj" />
     <ProjectReference Include="..\CrawlerWorker\CrawlerWorker.csproj" />
+    <!-- Worker 不再直接引用插件程序集（W-04），测试直接引用：ThesisPlugin 的解析与契约测试、集成测试用的 MockPlugin -->
+    <ProjectReference Include="..\ThesisPlugin\ThesisPlugin.csproj" />
+    <ProjectReference Include="..\MockPlugin\MockPlugin.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -48,10 +46,10 @@
     <None Update="Integration\TestSite\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- 进程内 Worker 的 PluginManager 从 AppContext.BaseDirectory/Plugins 反射加载插件，
-       这里把 MockPlugin 复制到测试输出目录的 Plugins/，与 CrawlerWorker 的部署方式一致 -->
+  <!-- 进程内 Worker 的 PluginManager 从 AppContext.BaseDirectory/Plugins 加载插件。这里把 MockPlugin 复制到
+       测试输出目录的 Plugins/MockPlugin/，与 CrawlerWorker 的部署方式（每个插件一个子目录）一致 -->
   <Target Name="CopyMockPluginForIntegrationTests" AfterTargets="Build">
-    <Copy SourceFiles="$(OutDir)MockPlugin.dll" DestinationFolder="$(OutDir)Plugins" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutDir)MockPlugin.dll" DestinationFolder="$(OutDir)Plugins\MockPlugin" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -10,8 +10,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj" />
-    <ProjectReference Include="..\MockPlugin\MockPlugin.csproj" />
-    <ProjectReference Include="..\ThesisPlugin\ThesisPlugin.csproj" />
+  </ItemGroup>
+
+  <!-- 随 Worker 一起部署的插件。只保证构建顺序（ReferenceOutputAssembly=false），Worker 不直接引用插件程序集；
+       构建/发布后由下面的目标把每个插件的输出复制到 Plugins/<插件项目名>/（W-04） -->
+  <ItemGroup>
+    <CrawlerPlugin Include="..\ThesisPlugin\ThesisPlugin.csproj" />
+    <CrawlerPlugin Include="..\MockPlugin\MockPlugin.csproj" />
+    <ProjectReference Include="@(CrawlerPlugin)" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
 
   <ItemGroup>
@@ -32,8 +38,7 @@
 	  <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
 	  <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
 
-	  <!-- 爬虫引擎核心依赖 -->
-	  <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
+	  <!-- 爬虫引擎核心依赖（HtmlAgilityPack 只有插件使用，由插件自带） -->
 	  <PackageReference Include="AngleSharp" Version="1.4.0" />
   </ItemGroup>
 
@@ -47,55 +52,33 @@
     </None>
   </ItemGroup>
 
-	<Target Name="CopyPluginDllsToOutput" AfterTargets="Build;Publish">
-		<!-- 1. 确定基础路径（修复斜杠拼接错误） -->
-		<PropertyGroup>
-			<!-- 强制使用 MSBuildProjectDirectory 作为基准，防止相对路径漂移 -->
-			<SolutionDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..'))</SolutionDir>
-			<!-- 【核心修改1】适配你的实际结构：MockPlugin直接在解决方案根目录下 -->
-			<PluginsSourceRoot>$(SolutionDir)</PluginsSourceRoot>
+  <!-- 取得各插件的输出目录（与 ProjectReference 相同的方式求值），收集要部署的文件：
+       插件程序集、pdb、deps.json 以及插件自己的依赖。CrawlerCore 由 Worker 提供，不随插件部署
+       （插件项目对它的引用是 Private=false；这里再排除一次，防止插件输出目录里残留旧版本） -->
+  <Target Name="_CollectCrawlerPluginFiles" DependsOnTargets="ResolveProjectReferences">
+    <MSBuild Projects="@(CrawlerPlugin)" Targets="GetTargetPath" RemoveProperties="RuntimeIdentifier;SelfContained">
+      <Output TaskParameter="TargetOutputs" ItemName="_CrawlerPluginAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <_CrawlerPluginCandidate Include="%(_CrawlerPluginAssembly.RootDir)%(_CrawlerPluginAssembly.Directory)*.dll;%(_CrawlerPluginAssembly.RootDir)%(_CrawlerPluginAssembly.Directory)*.pdb;%(_CrawlerPluginAssembly.RootDir)%(_CrawlerPluginAssembly.Directory)*.deps.json">
+        <PluginName>%(_CrawlerPluginAssembly.Filename)</PluginName>
+      </_CrawlerPluginCandidate>
+      <_CrawlerPluginFile Include="@(_CrawlerPluginCandidate)" Condition="!$([System.String]::Copy('%(Filename)').StartsWith('CrawlerCore'))" />
+    </ItemGroup>
+  </Target>
 
-			<!-- 确定输出目录 -->
-			<BaseOutputDir Condition="'$(PublishDir)'==''">$([System.IO.Path]::GetFullPath('$(OutputPath)'))</BaseOutputDir>
-			<BaseOutputDir Condition="'$(PublishDir)'!=''">$([System.IO.Path]::GetFullPath('$(PublishDir)'))</BaseOutputDir>
+  <Target Name="CopyCrawlerPluginsAfterBuild" AfterTargets="Build" DependsOnTargets="_CollectCrawlerPluginFiles">
+    <Copy SourceFiles="@(_CrawlerPluginFile)"
+          DestinationFiles="@(_CrawlerPluginFile->'$(OutDir)Plugins\%(PluginName)\%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="插件已复制到 $(OutDir)Plugins：@(_CrawlerPluginAssembly->'%(Filename)', ', ')" />
+  </Target>
 
-			<!-- 【核心修改2】修复路径拼接，确保带斜杠 -->
-			<TargetPluginsDir>$([System.IO.Path]::Combine($(BaseOutputDir), 'Plugins'))</TargetPluginsDir>
-			<CurrentPhase Condition="'$(PublishDir)'==''">Build</CurrentPhase>
-			<CurrentPhase Condition="'$(PublishDir)'!=''">Publish</CurrentPhase>
-		</PropertyGroup>
-
-		<!-- 2. 创建目录 -->
-		<MakeDir Directories="$(TargetPluginsDir)" />
-
-		<!-- 3. 【核心修改3】扫描路径适配你的实际结构：直接扫描解决方案根目录下的所有插件项目 -->
-		<ItemGroup>
-			<CandidatePluginDlls Include="$(PluginsSourceRoot)\*\bin\$(Configuration)\net10.0\*.dll" />
-			<CandidatePluginDlls Include="$(PluginsSourceRoot)\*\bin\$(Configuration)\net10.0\*.pdb" Condition="'$(Configuration)'=='Debug'" />
-		</ItemGroup>
-
-		<!-- 4. 去重与过滤 -->
-		<RemoveDuplicates Inputs="@(CandidatePluginDlls)">
-			<Output TaskParameter="Filtered" ItemName="UniqueCandidateDlls" />
-		</RemoveDuplicates>
-
-		<ItemGroup>
-			<ValidPluginDlls Include="@(UniqueCandidateDlls)" Condition="Exists('%(Identity)') And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerCore')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerWorker')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('CrawlerMaster')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('Google.')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('Grpc.')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('Microsoft.')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('Serilog')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('System.')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('AngleSharp')) And &#xD;&#xA;                          !$([System.String]::Copy('%(Filename)').StartsWith('HtmlAgilityPack'))" />
-		</ItemGroup>
-
-		<!-- 5. 执行复制 -->
-		<Copy SourceFiles="@(ValidPluginDlls)" DestinationFolder="$(TargetPluginsDir)" SkipUnchangedFiles="True" OverwriteReadOnlyFiles="True" />
-
-		<!-- 6. 日志输出 (增加了源路径打印以便调试) -->
-		<Message Text="========================================" Importance="high" />
-		<Message Text="   插件 DLL 复制处理完成" Importance="high" />
-		<Message Text="   阶段: $(CurrentPhase)" Importance="high" />
-		<Message Text="   扫描源: $(PluginsSourceRoot)" Importance="high" />
-		<Message Text="   目标目录: $(TargetPluginsDir)" Importance="high" />
-		<Message Text="   扫描到候选: @(UniqueCandidateDlls-&gt;Count()) 个" Importance="high" />
-		<Message Text="   有效插件数: @(ValidPluginDlls-&gt;Count()) 个" Importance="high" />
-		<Message Text="   复制列表: @(ValidPluginDlls->'%(Filename)%(Extension)')" Importance="high" Condition="'@(ValidPluginDlls)'!=''" />
-		<Message Text="========================================" Importance="high" />
-	</Target>
+  <Target Name="CopyCrawlerPluginsAfterPublish" AfterTargets="Publish" DependsOnTargets="_CollectCrawlerPluginFiles">
+    <Copy SourceFiles="@(_CrawlerPluginFile)"
+          DestinationFiles="@(_CrawlerPluginFile->'$(PublishDir)Plugins\%(PluginName)\%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="插件已复制到 $(PublishDir)Plugins：@(_CrawlerPluginAssembly->'%(Filename)', ', ')" />
+  </Target>
 
 </Project>

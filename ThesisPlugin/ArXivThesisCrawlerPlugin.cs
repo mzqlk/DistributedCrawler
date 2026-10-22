@@ -4,6 +4,7 @@ using CrawlerCore.Infrastructure;
 using HtmlAgilityPack;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -11,7 +12,16 @@ using System.Threading.Tasks;
 namespace CrawlerPlugins.ThesisPlugin
 {
     /// <summary>
-    /// arXiv论文专属爬虫插件
+    /// arXiv论文专属爬虫插件：解析 arXiv 论文详情页（/abs/）。
+    /// <para>
+    /// 输出的 parsedData 键（ArXivId、Title、Authors、AuthorsList、Abstract、Subjects、SubjectsList、PublicationDate、DOI、
+    /// PdfUrl、SourceUrl、NormalizedUrl、Comment）是 DataAnalysis 的输入契约，键名不能改（见 CLAUDE.md）。
+    /// </para>
+    /// <para>
+    /// 解析以页面结构为准（h1.title、div.authors 下的每个链接、blockquote.abstract、td.subjects、td.comments），
+    /// 结构缺失时回退到页面给机器读取的 citation_* 元数据；不再对整页文本做正则匹配（W-05、W-06：那会把作者截成第一位、
+    /// 把摘要变成链接文字或混入 Comments 行）。标题取不到时视为页面结构不匹配，解析失败，而不是输出错误数据。
+    /// </para>
     /// </summary>
     public class ArXivThesisCrawlerPlugin : ICrawlerPlugin
     {
@@ -23,25 +33,34 @@ namespace CrawlerPlugins.ThesisPlugin
         /// <summary>
         /// 插件版本
         /// </summary>
-        public string Version => "1.3.0";
+        public string Version => "1.4.0";
 
-        #region 正则表达式（预编译，用于内容提取）
-        private static readonly Regex ArXivIdRegex = new Regex(@"arXiv:([\d]+\.[\d]+v?[\d]*)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        private static readonly Regex SubmitDateRegex = new Regex(@"Submitted on (\d{1,2}\s+\w+\s+\d{4})", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        private static readonly Regex DoiRegex = new Regex(@"https://doi\.org/([^\s<>""]+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        #region 正则表达式
+        private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
+
+        // arXiv 编号：新式 2106.09685，旧式 hep-th/9901001；版本号单独匹配
+        private static readonly Regex ArXivIdRegex = new(@"arXiv:\s*((?:\d{4}\.\d{4,5})|(?:[a-z\-]+(?:\.[A-Z]{2})?/\d{7}))(?:v\d+)?",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
+        private static readonly Regex AbsPathIdRegex = new(@"/abs/((?:\d{4}\.\d{4,5})|(?:[a-z\-]+(?:\.[A-Z]{2})?/\d{7}))(?:v\d+)?$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
+        private static readonly Regex VersionSuffixRegex = new(@"v\d+$", RegexOptions.Compiled, RegexTimeout);
+        private static readonly Regex SubmitDateRegex = new(@"Submitted on (\d{1,2}\s+\w+\s+\d{4})",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
+        private static readonly Regex DoiRegex = new(@"https://doi\.org/([^\s<>""]+)", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
+        private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled, RegexTimeout);
         #endregion
 
         #region URL 过滤正则（用于作用域限制）
         // 只允许论文详情页：https://arxiv.org/abs/数字.数字[版本号]
         private static readonly Regex AbsUrlPattern = new(
             @"^https?://arxiv\.org/abs/\d+\.\d+$",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled
+            RegexOptions.IgnoreCase | RegexOptions.Compiled, RegexTimeout
         );
 
-        // robots.txt 中明确禁止的路径模式（快速拒绝）
+        // robots.txt 中明确禁止的路径模式（快速拒绝）。是否允许请求以引擎的 robots 策略为准，这里只是插件自己的作用域限制
         private static readonly Regex DisallowedPathPattern = new(
             @"/(IgnoreMe|search|auth|user|form|find|cookies|api|prevnext|trackback|src|ps|dvi|format|PS_cache|Stats|oai2|tb|ct|show-email)",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled
+            RegexOptions.IgnoreCase | RegexOptions.Compiled, RegexTimeout
         );
         #endregion
 
@@ -64,191 +83,115 @@ namespace CrawlerPlugins.ThesisPlugin
         /// <summary>
         /// 执行arXiv论文页面解析核心逻辑
         /// </summary>
-        public async Task<PluginResult> ExecuteAsync(PluginContext context)
+        public Task<PluginResult> ExecuteAsync(PluginContext context)
         {
             var result = new PluginResult();
             try
             {
-                LogHelper.Info($"[{Name}] 开始执行解析，目标URL: {context.Url}");
+                LogHelper.Debug($"[{Name}] 开始解析: {context.Url}");
 
                 #region 前置校验与 URL 规范化
                 if (string.IsNullOrWhiteSpace(context.Url))
                 {
-                    result.Success = false;
-                    result.ErrorMessage = "目标URL为空，无法执行解析";
-                    LogHelper.Warn($"[{Name}] 解析终止：{result.ErrorMessage}");
-                    return result;
+                    return Task.FromResult(Fail(result, "目标URL为空，无法执行解析"));
                 }
                 if (string.IsNullOrWhiteSpace(context.Html))
                 {
-                    result.Success = false;
-                    result.ErrorMessage = "HTML内容为空，可能是页面加载失败或反爬限制";
-                    LogHelper.Warn($"[{Name}] 解析终止：{result.ErrorMessage}");
-                    return result;
+                    return Task.FromResult(Fail(result, "HTML内容为空，可能是页面加载失败或反爬限制"));
                 }
 
                 var uri = new Uri(context.Url);
                 var normalizedUrl = $"{uri.Scheme}://{uri.Host}{uri.AbsolutePath}";
-                var urlLower = normalizedUrl.ToLower();
+                var path = uri.AbsolutePath.ToLowerInvariant();
 
-                // robots 协议合规检查
-                var allowedPaths = new[] { "/abs/" };
-                var disallowedPaths = new[] { "/search", "/api", "/user", "/form", "/find", "/auth", "/pdf/" };
-                if (disallowedPaths.Any(p => urlLower.Contains(p)))
+                // 下载后的路径校验（防御性）。请求前是否允许访问由引擎的 robots 策略负责
+                if (!path.StartsWith("/abs/", StringComparison.Ordinal))
                 {
-                    result.Success = false;
-                    result.ErrorMessage = "解析失败：该路径为arXiv robots协议禁止爬取的类型";
-                    LogHelper.Error($"[{Name}] 解析终止：{result.ErrorMessage}，URL: {context.Url}");
-                    return result;
-                }
-                if (!allowedPaths.Any(p => urlLower.Contains(p)))
-                {
-                    result.Success = false;
-                    result.ErrorMessage = "解析失败：插件仅支持arXiv论文详情页(/abs/路径)";
-                    LogHelper.Warn($"[{Name}] 解析终止：{result.ErrorMessage}，URL: {context.Url}");
-                    return result;
+                    return Task.FromResult(Fail(result, "插件仅支持arXiv论文详情页(/abs/路径)"));
                 }
                 #endregion
 
                 #region HTML 解析与字段提取
                 var htmlDoc = new HtmlDocument();
                 htmlDoc.LoadHtml(context.Html);
-                var fullHtmlText = htmlDoc.DocumentNode.InnerText;
+                var root = htmlDoc.DocumentNode;
 
-                // 1. 提取 ArXivId
-                string arxivId = string.Empty;
-                var arxivIdMatch = ArXivIdRegex.Match(fullHtmlText);
-                if (arxivIdMatch.Success)
-                {
-                    arxivId = arxivIdMatch.Groups[1].Value.Trim();
-                }
+                // 1. ArXivId（不带版本号）：citation_arxiv_id → “Cite as” 中的编号 → URL 路径
+                var arxivId = ExtractArXivId(root, uri);
                 result.Data["ArXivId"] = arxivId;
-                LogHelper.Debug($"[{Name}] 提取ArXivId: {arxivId}");
 
-                // 2. 提取标题
-                string title = string.Empty;
-                var titleNode = htmlDoc.DocumentNode.SelectSingleNode("//*[contains(text(),'Title:')]/following-sibling::*[1]")
-                    ?? htmlDoc.DocumentNode.SelectSingleNode("//*[starts-with(normalize-space(text()),'Title:')]");
-                if (titleNode != null)
-                {
-                    title = CleanText(titleNode.InnerText).Replace("Title:", "", StringComparison.OrdinalIgnoreCase).Trim();
-                }
+                // 2. 标题：h1.title 去掉 “Title:” 标签 → citation_title
+                var title = TextWithoutDescriptor(root.SelectSingleNode("//h1[contains(concat(' ', normalize-space(@class), ' '), ' title ')]"));
                 if (string.IsNullOrEmpty(title))
                 {
-                    var titleMatch = Regex.Match(fullHtmlText, @"Title:\s*([\s\S]*?)(?=Authors:|Abstract:|$)", RegexOptions.IgnoreCase);
-                    if (titleMatch.Success) title = CleanText(titleMatch.Groups[1].Value);
+                    title = MetaContents(root, "citation_title").FirstOrDefault() ?? string.Empty;
                 }
                 result.Data["Title"] = title;
-                LogHelper.Debug($"[{Name}] 提取标题: {title}");
 
-                // 3. 提取作者
-                var authors = new List<string>();
-                var authorNode = htmlDoc.DocumentNode.SelectSingleNode("//*[contains(text(),'Authors:')]/following-sibling::*[1]")
-                    ?? htmlDoc.DocumentNode.SelectSingleNode("//*[starts-with(normalize-space(text()),'Authors:')]");
-                if (authorNode != null)
-                {
-                    var authorText = CleanText(authorNode.InnerText).Replace("Authors:", "", StringComparison.OrdinalIgnoreCase).Trim();
-                    authors = authorText.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
-                                        .Select(a => CleanText(a))
-                                        .Where(a => !string.IsNullOrEmpty(a))
-                                        .ToList();
-                }
+                // 3. 作者：div.authors 下的每个链接（“名 姓”）→ citation_author（“姓, 名”，转换为“名 姓”）
+                var authors = root.SelectNodes("//div[contains(concat(' ', normalize-space(@class), ' '), ' authors ')]/a")
+                    ?.Select(a => CleanText(a.InnerText))
+                    .Where(a => a.Length > 0)
+                    .ToList() ?? new List<string>();
                 if (authors.Count == 0)
                 {
-                    var authorMatch = Regex.Match(fullHtmlText, @"Authors:\s*([\s\S]*?)(?=Abstract:|Title:|$)", RegexOptions.IgnoreCase);
-                    if (authorMatch.Success)
-                    {
-                        var authorText = CleanText(authorMatch.Groups[1].Value);
-                        authors = authorText.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
-                                            .Select(a => CleanText(a))
-                                            .Where(a => !string.IsNullOrEmpty(a))
-                                            .ToList();
-                    }
+                    authors = MetaContents(root, "citation_author").Select(ToGivenNameFirst).Where(a => a.Length > 0).ToList();
                 }
                 result.Data["Authors"] = string.Join(", ", authors);
                 result.Data["AuthorsList"] = authors;
-                LogHelper.Debug($"[{Name}] 提取作者: {string.Join(", ", authors)}");
 
-                // 4. 提取摘要
-                string abstractContent = string.Empty;
-                var abstractNode = htmlDoc.DocumentNode.SelectSingleNode("//*[contains(text(),'Abstract:')]/following-sibling::*[1]")
-                    ?? htmlDoc.DocumentNode.SelectSingleNode("//*[starts-with(normalize-space(text()),'Abstract:')]");
-                if (abstractNode != null)
-                {
-                    abstractContent = CleanText(abstractNode.InnerText).Replace("Abstract:", "", StringComparison.OrdinalIgnoreCase).Trim();
-                }
+                // 4. 摘要：blockquote.abstract 去掉 “Abstract:” 标签，保留其中链接的文字 → citation_abstract
+                var abstractContent = TextWithoutDescriptor(root.SelectSingleNode("//blockquote[contains(concat(' ', normalize-space(@class), ' '), ' abstract ')]"));
                 if (string.IsNullOrEmpty(abstractContent))
                 {
-                    var abstractMatch = Regex.Match(fullHtmlText, @"Abstract:\s*([\s\S]*?)(?=Subjects:|$)", RegexOptions.IgnoreCase);
-                    if (abstractMatch.Success) abstractContent = CleanText(abstractMatch.Groups[1].Value);
+                    abstractContent = MetaContents(root, "citation_abstract").FirstOrDefault() ?? string.Empty;
                 }
                 result.Data["Abstract"] = abstractContent;
-                LogHelper.Debug($"[{Name}] 提取摘要完成，长度: {abstractContent.Length}");
 
-                // 5. 提取主题分类
-                var subjects = new List<string>();
-                var subjectNode = htmlDoc.DocumentNode.SelectSingleNode("//tr[td[contains(text(),'Subjects:')]]/td[2]");
-                if (subjectNode != null)
-                {
-                    var subjectText = CleanText(subjectNode.InnerText);
-                    subjects = subjectText.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
-                                          .Select(s => CleanText(s))
-                                          .Where(s => !string.IsNullOrEmpty(s))
-                                          .ToList();
-                }
+                // 5. 主题分类：td.subjects → “Subjects:” 所在行的第二列
+                var subjectNode = root.SelectSingleNode("//td[contains(concat(' ', normalize-space(@class), ' '), ' subjects ')]")
+                    ?? root.SelectSingleNode("//tr[td[contains(text(),'Subjects:')]]/td[2]");
+                var subjects = subjectNode == null
+                    ? new List<string>()
+                    : CleanText(subjectNode.InnerText).Split(';', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(CleanText)
+                        .Where(s => s.Length > 0)
+                        .ToList();
                 result.Data["Subjects"] = string.Join("; ", subjects);
                 result.Data["SubjectsList"] = subjects;
-                LogHelper.Debug($"[{Name}] 提取分类: {string.Join("; ", subjects)}");
 
-                // 6. 提取提交时间
-                string publicationDate = string.Empty;
-                var dateMatch = SubmitDateRegex.Match(fullHtmlText);
-                if (dateMatch.Success)
-                {
-                    publicationDate = dateMatch.Groups[1].Value.Trim();
-                }
-                result.Data["PublicationDate"] = publicationDate;
-                LogHelper.Debug($"[{Name}] 提取提交时间: {publicationDate}");
+                // 6. 首次提交日期（“12 Jun 2017” 格式，与历史数据一致）：div.dateline → citation_date
+                result.Data["PublicationDate"] = ExtractPublicationDate(root);
 
-                // 7. 提取 DOI
-                string doi = string.Empty;
-                var doiMatch = DoiRegex.Match(htmlDoc.DocumentNode.InnerHtml);
-                if (doiMatch.Success)
-                {
-                    doi = doiMatch.Groups[1].Value.Trim();
-                }
-                result.Data["DOI"] = doi;
-                LogHelper.Debug($"[{Name}] 提取DOI: {doi}");
+                // 7. DOI：页面上的第一个 doi.org 链接（保持原有口径，见 docs/review/worker.md W-29）
+                var doiMatch = DoiRegex.Match(root.InnerHtml);
+                result.Data["DOI"] = doiMatch.Success ? doiMatch.Groups[1].Value.Trim() : string.Empty;
 
-                // 8. 生成 PDF 链接等
-                string pdfUrl = string.IsNullOrEmpty(arxivId) ? string.Empty : $"https://arxiv.org/pdf/{arxivId}.pdf";
-                result.Data["PdfUrl"] = pdfUrl;
+                // 8. PDF 链接、来源与备注
+                result.Data["PdfUrl"] = string.IsNullOrEmpty(arxivId) ? string.Empty : $"https://arxiv.org/pdf/{arxivId}.pdf";
                 result.Data["SourceUrl"] = context.Url;
                 result.Data["NormalizedUrl"] = normalizedUrl;
-                result.Data["Comment"] = string.Empty;
+                result.Data["Comment"] = CleanText(root.SelectSingleNode("//td[contains(concat(' ', normalize-space(@class), ' '), ' comments ')]")?.InnerText);
                 #endregion
 
                 #region 结果校验
-                if (string.IsNullOrEmpty(arxivId) && string.IsNullOrEmpty(title))
+                if (string.IsNullOrEmpty(title))
                 {
-                    result.Success = false;
-                    result.ErrorMessage = "解析失败：未提取到论文核心信息，页面结构不匹配";
-                    LogHelper.Error($"[{Name}] 解析失败：{result.ErrorMessage}，URL: {context.Url}");
-                    return result;
+                    return Task.FromResult(Fail(result, "未提取到论文标题，页面结构不匹配"));
                 }
 
                 result.Success = true;
-                LogHelper.Info($"[{Name}] 论文解析成功！arXiv编号: {arxivId}，标题: {title}");
+                LogHelper.Debug($"[{Name}] 解析成功: {arxivId}，作者 {authors.Count} 位，摘要 {abstractContent.Length} 字符");
                 #endregion
 
-                return result;
+                return Task.FromResult(result);
             }
             catch (Exception ex)
             {
                 result.Success = false;
                 result.ErrorMessage = $"解析异常: {ex.Message}";
-                LogHelper.Error($"[{Name}] 解析发生异常，URL: {context.Url}");
-                return result;
+                LogHelper.Error(ex, $"[{Name}] 解析发生异常，URL: {context.Url}");
+                return Task.FromResult(result);
             }
         }
 
@@ -262,11 +205,85 @@ namespace CrawlerPlugins.ThesisPlugin
         }
 
         #region 辅助方法
-        private string CleanText(string rawText)
+        private PluginResult Fail(PluginResult result, string message)
+        {
+            result.Success = false;
+            result.ErrorMessage = $"解析失败：{message}";
+            LogHelper.Warn($"[{Name}] {result.ErrorMessage}");
+            return result;
+        }
+
+        /// <summary>折叠空白并解码 HTML 实体</summary>
+        private static string CleanText(string? rawText)
         {
             if (string.IsNullOrWhiteSpace(rawText))
                 return string.Empty;
-            return Regex.Replace(rawText, @"\s+", " ").Trim();
+            return WhitespaceRegex.Replace(HtmlEntity.DeEntitize(rawText), " ").Trim();
+        }
+
+        /// <summary>节点的文本，去掉其中的 span.descriptor（“Title:”“Abstract:” 等标签）</summary>
+        private static string TextWithoutDescriptor(HtmlNode? node)
+        {
+            if (node == null) return string.Empty;
+            var clone = node.CloneNode(deep: true);
+            var descriptors = clone.SelectNodes(".//span[contains(concat(' ', normalize-space(@class), ' '), ' descriptor ')]");
+            if (descriptors != null)
+            {
+                foreach (var descriptor in descriptors)
+                {
+                    descriptor.Remove();
+                }
+            }
+            return CleanText(clone.InnerText);
+        }
+
+        private static IEnumerable<string> MetaContents(HtmlNode root, string name)
+            => root.SelectNodes($"//meta[@name='{name}']")
+                   ?.Select(m => CleanText(m.GetAttributeValue("content", string.Empty)))
+                   .Where(c => c.Length > 0)
+               ?? Enumerable.Empty<string>();
+
+        /// <summary>citation_author 的 “姓, 名” 转为页面显示的 “名 姓”</summary>
+        private static string ToGivenNameFirst(string citationAuthor)
+        {
+            var parts = citationAuthor.Split(',', 2, StringSplitOptions.TrimEntries);
+            return parts.Length == 2 && parts[1].Length > 0 ? $"{parts[1]} {parts[0]}" : citationAuthor;
+        }
+
+        private static string ExtractArXivId(HtmlNode root, Uri uri)
+        {
+            var fromMeta = MetaContents(root, "citation_arxiv_id").FirstOrDefault();
+            if (!string.IsNullOrEmpty(fromMeta))
+            {
+                return VersionSuffixRegex.Replace(fromMeta, string.Empty);
+            }
+
+            var citeAs = root.SelectSingleNode("//span[contains(concat(' ', normalize-space(@class), ' '), ' arxivid ')]");
+            var match = citeAs == null ? Match.Empty : ArXivIdRegex.Match(CleanText(citeAs.InnerText));
+            if (match.Success)
+            {
+                return match.Groups[1].Value;
+            }
+
+            match = AbsPathIdRegex.Match(uri.AbsolutePath);
+            return match.Success ? match.Groups[1].Value : string.Empty;
+        }
+
+        private static string ExtractPublicationDate(HtmlNode root)
+        {
+            var dateline = root.SelectSingleNode("//div[contains(concat(' ', normalize-space(@class), ' '), ' dateline ')]");
+            var match = dateline == null ? Match.Empty : SubmitDateRegex.Match(CleanText(dateline.InnerText));
+            if (match.Success)
+            {
+                return match.Groups[1].Value;
+            }
+
+            // citation_date 形如 2017/06/12
+            var citationDate = MetaContents(root, "citation_date").FirstOrDefault();
+            return citationDate != null
+                   && DateTime.TryParseExact(citationDate, "yyyy/MM/dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
+                ? date.ToString("d MMM yyyy", CultureInfo.InvariantCulture)
+                : string.Empty;
         }
         #endregion
     }

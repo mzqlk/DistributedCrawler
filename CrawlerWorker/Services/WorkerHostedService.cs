@@ -423,20 +423,6 @@ namespace CrawlerWorker.Services
             }
         }
 
-        private static string ConvertValueForProto(object? value)
-        {
-            if (value == null) return string.Empty;
-
-            System.Type type = value.GetType();
-
-            // 如果是基本类型、字符串或值类型，直接返回其字符串表示（不带引号）
-            if (type.IsPrimitive || type == typeof(string) || type.IsEnum || type == typeof(decimal))
-                return value.ToString()!;
-
-            // 如果是集合、字典或其他复杂类型，序列化为 JSON
-            return JsonSerializer.Serialize(value, JsonConfig.Options);
-        }
-
         /// <summary>
         /// 任务最终状态强制上报：忽略节流间隔，确保Master收到最终结果
         /// </summary>
@@ -482,10 +468,7 @@ namespace CrawlerWorker.Services
 
                             if (pr.ParsedData != null && pr.ParsedData.Count > 0)
                             {
-                                var dict = pr.ParsedData.ToDictionary(
-                                    kv => kv.Key,
-                                    kv => ConvertValueForProto(kv.Value));
-                                protoPr.ParsedData.Add(dict);
+                                protoPr.ParsedData.Add(ParsedDataConverter.ToProtoMap(pr.ParsedData));
                             }
 
                             if (pr.Links != null && pr.Links.Count > 0)
@@ -1169,14 +1152,5 @@ namespace CrawlerWorker.Services
             Dispose();
         }
         #endregion
-    }
-
-    public static class JsonConfig
-    {
-        public static readonly JsonSerializerOptions Options = new()
-        {
-            WriteIndented = false, // 上报时无需缩进
-            Converters = { new SystemObjectJsonConverter() }
-        };
     }
 }

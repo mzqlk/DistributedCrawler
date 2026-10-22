@@ -1,13 +1,18 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- 插件写法见 ThesisPlugin.csproj -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj" />
+    <ProjectReference Include="..\CrawlerCore\CrawlerCore.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime;native</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>
