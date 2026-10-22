@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using CrawlerCore.Infrastructure;
 
 namespace CrawlerCore.Events
 {
@@ -54,7 +55,8 @@ namespace CrawlerCore.Events
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[{nameof(EventAggregator)}] Event handler failed: {ex}");
+                        // 一个订阅者出错不影响其他订阅者，但必须留下日志（Release 构建中 Debug.WriteLine 不会执行）
+                        LogHelper.Error(ex, $"事件处理程序执行失败: {eventType.Name}");
                     }
                 }
             }

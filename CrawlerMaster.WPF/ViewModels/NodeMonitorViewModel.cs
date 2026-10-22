@@ -59,10 +59,12 @@ namespace CrawlerMaster.WPF.ViewModels
             get => _selectedNode;
             set
             {
+                // 先保存旧值：SetProperty 之后字段已是新节点，退订必须作用在旧节点上
+                var oldNode = _selectedNode;
                 if (SetProperty(ref _selectedNode, value))
                 {
                     // 选中节点变化时，重新绑定历史数据，创建新的PlotModel
-                    OnSelectedNodeChanged();
+                    OnSelectedNodeChanged(oldNode);
                 }
             }
         }
@@ -87,13 +89,13 @@ namespace CrawlerMaster.WPF.ViewModels
         #endregion
 
         #region 选中节点变化处理（创建独立PlotModel）
-        private void OnSelectedNodeChanged()
+        private void OnSelectedNodeChanged(NodeDisplayInfo? oldNode)
         {
-            // 先取消之前的事件订阅，避免内存泄漏
-            if (_selectedNode != null)
+            // 先取消旧节点的事件订阅，避免订阅泄漏（每次切换都多一份订阅，心跳时整图重绘多次）
+            if (oldNode != null)
             {
-                _selectedNode.CpuHistory.CollectionChanged -= OnMonitorCpuHistoryChanged;
-                _selectedNode.MemoryHistory.CollectionChanged -= OnMonitorMemoryHistoryChanged;
+                oldNode.CpuHistory.CollectionChanged -= OnMonitorCpuHistoryChanged;
+                oldNode.MemoryHistory.CollectionChanged -= OnMonitorMemoryHistoryChanged;
             }
 
             if (_selectedNode == null)
