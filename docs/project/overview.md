@@ -36,12 +36,13 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
 | 阶段一：骨架、实体、EF Core、Serilog | ✅ 完成 | commit `dbb44d3` |
 | 阶段二：gRPC 注册/双向流/心跳、节点管理、优先级调度、负载均衡、故障重分配、SignalR | ✅ 完成 | `163a3ec` … `4384115` |
 | 阶段三：爬虫引擎、WPF 主框架、节点监控、任务管理、数据查看与导出 | ✅ 完成 | `cbf6f46` … `cd16e89` |
-| 论文爬虫插件（arXiv） | ✅ 完成（MVP） | `a9f9da5` |
+| 论文爬虫插件（arXiv） | ⚠️ 完成（MVP），解析有缺陷 | `a9f9da5`；T3 发现作者只取第一位、摘要约一半被污染、起始页违反 robots.txt，见 [`worker.md`](../review/worker.md) W-05 – W-08 |
 | 阶段四.1-4.2：**可视化流程设计器**（拖拽/连线/编译/拓扑排序） | ❌ 未实现 | 仓库无 Workflow/Designer 代码 |
-| 阶段四.3：插件系统 | ⚠️ 部分 | Worker 端加载已实现；Master 端插件管理 UI、`ValidateConfig`、NewsPlugin、AppDomain 隔离未做 |
+| 阶段四.3：插件系统 | ⚠️ 部分 | Worker 端加载已实现（本地构建不会把 ThesisPlugin 复制到 `Plugins/`，见 W-04）；Master 端插件管理 UI、`ValidateConfig`、NewsPlugin、插件隔离（W-18）未做 |
 | 阶段五：测试/优化/部署 | ⚠️ 部分 | Worker Dockerfile + compose、端到端集成测试已有；Master Dockerfile、MemoryManager、压测报告、用户/开发指南未做 |
 | 端到端集成测试（路线图 T1） | ✅ 2026-10-22 | `CrawlerCore.Tests/Integration/`：进程内 Master 后台服务 + 真实 Worker + Kestrel 静态站点 + 临时 SQLite。覆盖注册与心跳、任务分配→爬取→落库且进度不回退、Worker 崩溃与失联后的故障转移、Master 重启后恢复 Pending 任务；另有 4 个用 Skip 标记的已知缺陷测试（见 §4 第 8 条） |
 | Master 代码审阅（路线图 T2） | ✅ 2026-10-22（只出报告） | [`docs/review/master.md`](../review/master.md)：40 个问题，其中 P0 2 个、P1 7 个、P2 15 个、P3 16 个，编号 M-01 – M-40，由 T4 修复；见 §4 第 9 条 |
+| Worker、Core、插件代码审阅（路线图 T3） | ✅ 2026-10-22（只出报告） | [`docs/review/worker.md`](../review/worker.md)：35 个问题，其中 P0 1 个、P1 7 个、P2 17 个、P3 10 个，编号 W-01 – W-35，由 T5 修复；见 §4 第 10 条 |
 | 任务书：CNKI 等多源插件 | ❌ 未实现 | 只有 arXiv |
 | 任务书：作者合作网络、主题层次树、文档降维散点图 | ❌ 未实现 | 分析模块只做了 LDA；合作网络可参考 `docs/analysis/reference-flask-app/` |
 | 采集与分析端到端自动联动 | ❌ 文件级对接 | 论文第 7 章列为局限 |
@@ -64,7 +65,7 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
 5. 两模块仅文件级对接，未形成实时数据链路。
 6. 展望方向（答辩 PPT）：更多数据源插件（IEEE、Springer）、作者合作网络与机构影响力分析、热点趋势预测与个性化推荐、性能优化。
 7. 负载均衡中的“网络得分/专业化得分”目前是常量（20/10），论文描述的“按网络延迟/同类任务经验计算”未实现。
-8. **端到端集成测试发现的缺陷**（2026-10-22，T1）。D1–D4 已用 `CrawlerCore.Tests/Integration/MasterWorkerKnownDefectTests.cs` 中的测试复现，测试暂时 Skip，修复后去掉 Skip 即为回归测试；括号内是建议的严重度，以 T2/T3 审阅报告为准。Master 部分已经由 T2 复核并编号，对照见 [`docs/review/master.md` §5](../review/master.md#5-与-t1-已发现缺陷的对照)：D3 → M-03，D4 → M-01（定为 P0），写库竞态 → M-02（证实会丢任务，定为 P0），重复事件 → M-25，连接字符串 → M-26，“已完成但无数据” → M-11。
+8. **端到端集成测试发现的缺陷**（2026-10-22，T1）。D1–D4 已用 `CrawlerCore.Tests/Integration/MasterWorkerKnownDefectTests.cs` 中的测试复现，测试暂时 Skip，修复后去掉 Skip 即为回归测试；括号内是建议的严重度，以 T2/T3 审阅报告为准。Master 部分已经由 T2 复核并编号，对照见 [`docs/review/master.md` §5](../review/master.md#5-与-t1-已发现缺陷的对照)：D3 → M-03，D4 → M-01（定为 P0），写库竞态 → M-02（证实会丢任务，定为 P0），重复事件 → M-25，连接字符串 → M-26，“已完成但无数据” → M-11。Worker 部分已经由 T3 复核并编号，对照见 [`docs/review/worker.md` §5](../review/worker.md#5-与-t1mastermd-的对照)：D1 → W-02，D2 → W-01（定为 P0），停止时抛异常 → W-09，Windows CPU → W-16，环境变量 → W-13，排队时上报 Pending → W-22，“已完成但无数据”的 Worker 侧 → W-27，首条进度 → W-26。
    - **D1 Master 重启后，在线的 Worker 不会重新注册**（P1）。`WorkerHostedService.StartStreamingAsync` 在创建流调用后（服务端尚未响应）就把 `_reconnectAttempts` 清零，计数永远到不了 `MaxRetryAttempts`，Worker 一直用失效会话重连：测试中 20 秒内被拒约 100 次，始终不会重新注册。
    - **D2 Worker 正常停止（Ctrl+C、`docker stop`）时，正在执行的任务不会被重新调度**（P1）。停止时任务被取消，但引擎把被取消的请求记成 499 页面后正常结束，于是上报 Completed（取消发生在其他位置时上报 Failed）；故障恢复只处理 Running 任务。另外，`CleanupStreamResourcesAsync` 先取消流再等发送队列清空，结果消息会丢：测试中 Master 显示“已完成”，但没有任何数据。
    - **D3 同一 NodeId 的 Worker 崩溃后重启，30 分钟内无法注册**（P1）。流断开时 Master 不移除 `SessionManager` 里的会话，`RegisterNode` 返回 “Node already has an active session”，Worker 随即退出。此外 `SessionManager` 是 `BackgroundService`，却只按单例注册，过期清理循环从不运行。手动重开 Worker，或容器崩溃后被 `restart_policy` 拉起（NodeId 不变）时都会遇到。
@@ -86,6 +87,15 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
    - **M-06 一次创建多个任务时，全部分给同一节点**（P1，已复现）。负载均衡不看节点上已分配的任务数。
    - **M-07 内存阈值写死为 60%**（P1）。Windows 上 Worker 上报的是整机内存，常见开发机上节点永远不合格，任务永远不下发。
    - **M-08 切换过页面后，数据查看页不再自动刷新**（P1）。视图卸载时把单例 ViewModel Dispose 掉了。
+10. **Worker、Core、插件代码审阅发现的问题**（2026-10-22，T3）。完整清单、触发场景和修复建议见 [`docs/review/worker.md`](../review/worker.md)，由 T5 修复。P0/P1 如下：
+   - **W-01 Worker 正常停止时，正在执行的任务被错误结束，结果丢失**（P0，即 D2）。取消被当成失败页面后按 Completed 上报，或上报终态 Failed；停止时先取消流再等发送队列。
+   - **W-02 Master 重启后，在线的 Worker 不会重新注册**（P1，即 D1）。另有流结束原因被 `Task.WhenAny` 吞掉、重新注册失败即退出。依赖 M-09、M-03。
+   - **W-03 断线期间产生的进度和结果被直接丢弃，不会重发**（P1）。建议加进程级发件箱和结果回执（`FromMaster` 追加 `ResultAck`）；T4 若采用 M-04 ③ 的宽限期，必须同时完成。
+   - **W-04 本地构建的 Worker 没有 ArXivThesisPlugin**（P1，已实测）。插件复制目标把普通构建当成发布，只复制到 `publish/Plugins`；按 CLAUDE.md 在本机运行 Worker 时 arXiv 任务全部“未找到插件”。
+   - **W-05 ThesisPlugin 只解析出第一作者**（P1，已用真实页面和导出数据确认：1056 篇中 1054 篇只有 1 位作者）。**现有导出数据不能用来构建作者合作网络**，T7 应以 T6 重新采集的数据为主。
+   - **W-06 ThesisPlugin 的摘要约一半是错的**（P1）。摘要变成 `this https URL`（93 篇）或混入 `Comments: …`（464 篇），影响 LDA 的输入。
+   - **W-07 默认起始 URL `arxiv.org/search` 被 robots.txt 禁止，引擎不检查 robots**（P1，合规）。现有 22 个导出任务全部从该路径开始。
+   - **W-08 抓取间隔只对单个任务有效**（P1，合规）。多任务、多副本时对 arXiv 的请求频率超过 robots.txt 的 `Crawl-delay: 15`；跨节点限速由 T6 决定。
 
 ## 5. 文档与代码的差异（以代码为准）
 
