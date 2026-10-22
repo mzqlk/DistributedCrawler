@@ -1,19 +1,22 @@
 # 分布式爬虫管理与数据分析工作站
 
-一个基于 **.NET 10 + WPF** 构建的桌面端分布式爬虫管理系统，采用 Master-Worker 架构，支持多节点并行爬取、实时性能监控、可视化任务调度和插件化扩展，为大规模数据采集提供高效、稳定、易用的解决方案。
+一个基于 **.NET 10 + WPF** 构建的桌面端分布式爬虫管理系统，采用 Master-Worker 架构，支持多节点并行爬取、实时性能监控、图形化任务管理和插件化扩展；配套的 Python 数据分析模块（`DataAnalysis/`）对采集到的学术文献元数据做 LDA 主题建模与可视化。
+
+本项目源自毕业设计《面向学术文献元数据采集与主题可视化分析系统研究与实现》，设计文档、论文与开发计划见 [`docs/`](docs/README.md)。
 
 > ⚠️ **法律免责声明**：本项目仅用于学习和研究目的。使用者必须遵守《中华人民共和国网络安全法》《数据安全法》等相关法律法规，**禁止用于任何未经授权的数据采集活动**。请遵守目标网站的robots.txt协议，合理控制爬取频率，避免给目标网站造成不必要的负担。因使用本项目造成的任何法律责任，由使用者自行承担。
 
 ## ✨ 核心特性
 
 - **分布式执行**：支持动态添加/移除Worker节点，无需重启Master，任务自动负载均衡分配
-- **实时监控**：节点CPU/内存/磁盘使用率、任务执行进度、日志全链路实时展示
-- **可视化调度**：拖拽式流程设计器，无需编码即可构建复杂爬虫流程
-- **插件化架构**：基于接口的插件系统，快速扩展不同网站的爬取逻辑
-- **高可用性**：节点故障自动检测、任务重新分配、异常恢复机制
+- **实时监控**：节点CPU/内存/磁盘使用率、资源趋势曲线、任务执行进度实时展示
+- **图形化任务管理**：界面中创建任务（起始URL、插件、深度、页数上限、优先级），按优先级与节点负载自动分配
+- **插件化架构**：基于接口的插件系统，快速扩展不同网站的爬取逻辑（内置 arXiv 论文插件）
+- **高可用性**：节点故障自动检测、任务重新分配、Master 重启后恢复未调度任务
 - **高性能通信**：基于gRPC双向流式通信，低延迟、高吞吐量
 - **容器化部署**：Worker节点支持Docker一键部署，快速扩容集群
-- **数据持久化**：SQLite本地存储，支持爬取结果分页查询和CSV/JSON导出
+- **数据持久化**：SQLite本地存储，支持爬取结果分页查询和JSON导出
+- **主题分析**：导出的 JSON 可直接交给 `DataAnalysis/`（Streamlit + LDA）做主题建模、趋势与词云分析，并导出 CSV
 
 ## 🛠️ 技术栈
 
@@ -27,7 +30,8 @@
 | 爬虫引擎 | HtmlAgilityPack + AngleSharp | 强大的HTML/XML解析能力 |
 | 日志系统 | Serilog | 结构化日志，支持多输出源 |
 | 容器化 | Docker | 环境隔离，一键部署Worker节点 |
-| 实时推送 | SignalR | Master与UI层实时数据同步 |
+| 实时推送 | SignalR | 对外推送节点状态与任务进度（WPF 界面内部通过事件聚合器刷新） |
+| 数据分析 | Python + Streamlit + NLTK + Gensim | 文本预处理、LDA 主题建模、交互式可视化（`DataAnalysis/`） |
 
 ## 🏗️ 系统架构
 
@@ -38,9 +42,9 @@
 │                      Master 控制端 (WPF)                      │
 ├─────────────────────────────────────────────────────────────┤
 │  UI层(视图)  │  ViewModel层  │  业务逻辑层(Services)         │
-│              │               │  - 节点管理                  │
-│              │               │  - 任务调度                  │
-│              │               │  - 插件管理                  │
+│              │               │  - 节点管理/健康检查          │
+│              │               │  - 任务调度/负载均衡          │
+│              │               │  - 故障任务恢复              │
 │              │               │  - 实时数据同步              │
 └─────────────────────────────────────────────────────────────┘
                               │  gRPC 双向流
@@ -49,8 +53,8 @@
 │                    Worker 节点 (Console)                     │
 ├─────────────────────────────────────────────────────────────┤
 │  gRPC 客户端  │  爬虫引擎    │  资源监控器                  │
-│              │               │  - CPU/内存/磁盘采集         │
-│              │               │  - 心跳上报                  │
+│              │  - 插件加载   │  - CPU/内存/磁盘采集         │
+│              │  - BFS深度爬取│  - 心跳上报                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -96,6 +100,9 @@
    cd CrawlerWorker
    dotnet run
    ```
+   > 💡 `CrawlerWorker/appsettings.json` 中的 `MasterEndpoint` 默认是给 Docker 用的 `http://host.docker.internal:5001`；在宿主机直接运行 Worker 时请改为 `http://localhost:5001`。解决方案内的插件项目（如 `ThesisPlugin`）构建后会自动复制到 Worker 输出目录的 `Plugins/`。
+
+6. **数据分析（可选）**：见 [`DataAnalysis/`](DataAnalysis/README.md)
 
 ### Docker部署Worker节点
 
@@ -145,7 +152,7 @@
 ```json
 {
   "GrpcSettings": {
-    "MasterEndpoint": "http://localhost:5001",  // Master控制端地址
+    "MasterEndpoint": "http://host.docker.internal:5001",  // Master控制端地址（本机直接运行改为 http://localhost:5001）
     "NodeAuthToken": "your-secure-token-here"   // 与Master保持一致
   },
   "CrawlerSettings": {
@@ -158,25 +165,21 @@
 
 ### 1. 节点管理
 - 启动Worker节点后会自动注册到Master
-- 在「节点监控」页面查看所有在线节点的资源使用情况
-- 支持手动标记离线节点和查看节点详细信息
-- 超时2分钟无心跳的节点会被自动标记为离线，其未完成的任务会被重新分配
+- 在「节点监控」页面查看所有在线节点的资源使用情况，选中节点查看 CPU/内存趋势，双击查看节点详情
+- Master 每 15 秒检查一次，超过 1 分钟无心跳的节点会被自动标记为离线，其运行中的任务会被重置并重新分配
 
 ### 2. 创建爬虫任务
-- **快速创建**：指定起始URL、插件、爬取深度和最大页数
-- **流程设计**：使用可视化流程设计器，拖拽节点构建复杂爬取流程
-- 支持任务优先级设置（1-10，数值越大优先级越高）
-- 支持任务暂停、继续、停止和取消操作
+- 在「任务管理」页面指定任务名、起始URL、插件、爬取深度、最大页数
+- 支持任务优先级设置（1-5，数值越大优先级越高）
+- 任务按优先级入队，由负载均衡器分配给 CPU/内存占用最低的在线节点
 
 ### 3. 任务监控
-- 实时查看任务执行进度、已爬取页面数和运行状态
-- 查看任务运行日志，快速定位问题
-- 任务失败后支持自动重试和手动重新执行
+- 实时查看任务执行进度、已爬取页面数、运行状态和执行节点
 
 ### 4. 数据查看与导出
-- 分页查看所有爬取结果
-- 支持按URL、标题等关键词搜索
-- 导出爬取数据为CSV或JSON格式
+- 分页查看所有爬取结果，按任务ID/任务名称搜索
+- 双击单页结果查看完整解析数据
+- 导出整个任务或单页结果为 JSON（可直接作为 `DataAnalysis/` 的输入）
 
 ## 🔌 扩展开发
 
@@ -188,24 +191,26 @@
 ```csharp
 using CrawlerCore.Entities;
 using CrawlerCore.Interfaces;
+using HtmlAgilityPack;
 
 namespace MyCustomPlugin
 {
     public class MyPlugin : ICrawlerPlugin
     {
-        public string Name => "MyCustomPlugin"; // 全局唯一标识
+        public string Name => "MyCustomPlugin"; // 全局唯一标识，创建任务时填写的插件名
         public string Version => "1.0.0";
 
-        public async Task<PluginResult> ExecuteAsync(PluginContext context)
+        public Task<PluginResult> ExecuteAsync(PluginContext context)
         {
-            // 解析HTML内容
-            var doc = context.HtmlDocument;
-            
+            // context.Html 为页面原始HTML，context.Url 为页面地址
+            var doc = new HtmlDocument();
+            doc.LoadHtml(context.Html);
+
             // 自定义解析逻辑
-            var result = new PluginResult();
-            result.Data["title"] = doc.QuerySelector("title")?.TextContent?.Trim();
-            
-            return await Task.FromResult(result);
+            var result = new PluginResult { Success = true };
+            result.Data["title"] = doc.DocumentNode.SelectSingleNode("//title")?.InnerText.Trim() ?? string.Empty;
+
+            return Task.FromResult(result);
         }
 
         public Dictionary<string, string> GetDefaultConfiguration()
@@ -242,16 +247,18 @@ DistributedCrawler/
 │   └── Data/                   # 数据库上下文和实体
 ├── CrawlerWorker/              # Worker节点（控制台应用）
 │   ├── Communication/          # gRPC通信相关
-│   ├── Services/               # 核心业务服务
-│   └── Engine/                 # 爬虫引擎和插件管理
+│   └── Services/               # 核心业务服务
+│       └── Engine/             # 爬虫引擎和插件管理
 ├── CrawlerCore/                # 共享核心库（所有项目引用）
 │   ├── Entities/               # 数据实体定义
 │   ├── Interfaces/             # 公共接口定义
 │   ├── Protos/                 # gRPC协议文件
 │   └── Common/                 # 通用工具类和扩展方法
-├── CrawlerPlugins/             # 官方插件库
+├── ThesisPlugin/               # arXiv 论文爬虫插件
+├── MockPlugin/                 # 测试用插件
 ├── CrawlerCore.Tests/          # 单元测试项目
-├── docs/                       # 文档和截图
+├── DataAnalysis/               # Python 数据分析模块（Streamlit + LDA）
+├── docs/                       # 设计文档、论文与开发计划
 ├── docker-compose.yml          # Docker Compose部署配置
 └── README.md                   # 项目说明文档
 ```
@@ -265,7 +272,7 @@ DistributedCrawler/
 
 - **日志查看**：
   - 日志默认输出到控制台和文件
-  - 文件日志位于`Logs`目录，按日期滚动，默认保留30天
+  - 文件日志位于程序目录下的`logs`目录，按日期滚动，默认保留7天
   - 可通过`appsettings.json`配置日志级别和保留策略
 
 - **数据库维护**：
@@ -305,6 +312,8 @@ DistributedCrawler/
 ## 🗺️ 开发路线图
 
 ### v1.1（计划中）
+- [ ] 可视化流程设计器（拖拽构建爬取流程）
+- [ ] 任务暂停/继续/取消（协议中已定义 `TaskControl`，界面与 Worker 端未实现）
 - [ ] 支持MySQL/PostgreSQL数据库
 - [ ] 集成Redis作为分布式缓存
 - [ ] 添加代理池支持

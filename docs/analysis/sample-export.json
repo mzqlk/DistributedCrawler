@@ -1,0 +1,67 @@
+{
+  "taskId": "78253d48-949f-4d83-b1d3-9e6ad57bb8b5",
+  "taskName": "test6",
+  "totalPages": 50,
+  "completedAt": "2026-04-25T08:19:35",
+  "exportTime": "2026-04-25T16:25:52.482247+08:00",
+  "pageResults": [
+    {
+      "id": 190,
+      "url": "https://arxiv.org/abs/2604.21843",
+      "finalUrl": "https://arxiv.org/abs/2604.21843",
+      "statusCode": 200,
+      "statusDescription": "成功",
+      "linkCount": 59,
+      "parsedData": {
+        "ArXivId": "2604.21843",
+        "Title": "Causality-Encoded Diffusion Models for Interventional Sampling and Edge Inference",
+        "Authors": "Li Chen",
+        "AuthorsList": "[\"Li Chen\"]",
+        "Abstract": "Standard diffusion models are flexible estimators of complex distributions, but they do not encode causal structures and therefore do not by themselves support causal analysis. We propose a causality-encoded diffusion framework that incorporates a known directed acyclic graph by training conditional diffusion models consistent with the graph factorisation. The resulting sampler approximately recovers the observational distribution and enables interventional sampling by fixing intervened variables while propagating effects through the graph during reverse diffusion. Building on this interventional simulator, we develop a resampling-based test for directed edges that generates null replicates under a candidate graph. We establish convergence guarantees for observational and interventional distribution estimation, with rates governed by the maximum local dimension rather than the ambient dimension, and prove asymptotic control of type I error for the edge test. Simulations show improved interventional distribution recovery relative to baselines, with near-nominal size and favourable power in inference. An application to flow cytometry data demonstrates practical utility of the proposed method in assessing disputed signalling linkages.",
+        "Subjects": "Methodology (stat.ME); Machine Learning (stat.ML)",
+        "SubjectsList": "[\"Methodology (stat.ME)\",\"Machine Learning (stat.ML)\"]",
+        "PublicationDate": "23 Apr 2026",
+        "DOI": "10.48550/arXiv.2604.21843",
+        "PdfUrl": "https://arxiv.org/pdf/2604.21843.pdf",
+        "SourceUrl": "https://arxiv.org/abs/2604.21843",
+        "NormalizedUrl": "https://arxiv.org/abs/2604.21843",
+        "Comment": ""
+      },
+      "links": [
+        "https://arxiv.org/abs/2604.21843#content",
+        "https://www.cornell.edu/",
+        "https://tech.cornell.edu/arxiv/",
+        "...（原有 59 条，已截断）"
+      ]
+    },
+    {
+      "id": 189,
+      "url": "https://arxiv.org/abs/2604.21844",
+      "finalUrl": "https://arxiv.org/abs/2604.21844",
+      "statusCode": 200,
+      "statusDescription": "成功",
+      "linkCount": 61,
+      "parsedData": {
+        "ArXivId": "2604.21844",
+        "Title": "Does PCA Work for Rough Functional Data?",
+        "Authors": "Tim Kutta",
+        "AuthorsList": "[\"Tim Kutta\"]",
+        "Abstract": "Functional data analysis is concerned with the analysis of infinite-dimensional data functions. Functional principal component analysis (FPCA) is a key method to obtain finite-dimensional summaries. Consistency of FPCA has been theoretically established for sufficiently regular data functions. However, empirical evidence shows that FPCA can become severely inconsistent when the underlying functions are too rough. This paper provides the first theoretical explanation for this phenomenon. We propose a model that explicitly captures the roughness of functional data and allows us to quantify the resulting bias of FPCA, depending on the functional roughness. The model undergoes a phase transition marking the point at which FPCA becomes entirely uninformative. Based on these probabilistic results, we discuss diagnostic tests for informative principal components. As an additional contribution, we derive results on spectral statistics that may serve as a foundation for goodness-of-fit tests for rough functional data. Mathematically, our approach combines recent advances in random matrix theory and generic chaining with tools from FDA. We illustrate the effects of roughness on FPCA using simulations, as well as climate and environmental datasets.",
+        "Subjects": "Methodology (stat.ME); Statistics Theory (math.ST)",
+        "SubjectsList": "[\"Methodology (stat.ME)\",\"Statistics Theory (math.ST)\"]",
+        "PublicationDate": "23 Apr 2026",
+        "DOI": "10.48550/arXiv.2604.21844",
+        "PdfUrl": "https://arxiv.org/pdf/2604.21844.pdf",
+        "SourceUrl": "https://arxiv.org/abs/2604.21844",
+        "NormalizedUrl": "https://arxiv.org/abs/2604.21844",
+        "Comment": ""
+      },
+      "links": [
+        "https://arxiv.org/abs/2604.21844#content",
+        "https://www.cornell.edu/",
+        "https://tech.cornell.edu/arxiv/",
+        "...（原有 61 条，已截断）"
+      ]
+    }
+  ]
+}
