@@ -1,0 +1,119 @@
+using CrawlerCore.Entities;
+using CrawlerCore.Protos;
+using CrawlerCore.Tests.Integration.Infrastructure;
+using Grpc.Core;
+using Grpc.Net.Client;
+using Xunit.Abstractions;
+using TaskStatus = CrawlerCore.Entities.TaskStatus;
+
+namespace CrawlerCore.Tests.Integration;
+
+/// <summary>
+/// 集成测试暴露出的生产代码缺陷。每个测试描述“修复后应有的行为”，目前用 Skip 跳过；
+/// 修复对应缺陷后去掉 Skip，即成为回归测试。缺陷说明见 docs/project/overview.md “已知问题”。
+/// </summary>
+[Collection(IntegrationTestCollection.Name)]
+[Trait(IntegrationTestCollection.Category, IntegrationTestCollection.Integration)]
+public sealed class MasterWorkerKnownDefectTests : IntegrationTestBase
+{
+    public MasterWorkerKnownDefectTests(ITestOutputHelper output) : base(output)
+    {
+    }
+
+    [Fact(Skip = "已知缺陷 D1：WorkerHostedService.StartStreamingAsync 在创建流调用后立即把 _reconnectAttempts 清零，"
+        + "重连计数永远到不了 MaxRetryAttempts，Worker 用失效会话无限重连，不会重新注册")]
+    public async Task Master重启后在线Worker自动重新注册并继续接收任务()
+    {
+        var firstMaster = await StartMasterAsync("Master-1");
+        var worker = await StartWorkerAsync("it-node-a", firstMaster);
+        await firstMaster.WaitForNodeOnlineAsync("it-node-a");
+
+        // Master 进程崩溃：连接被重置；随后在新端口重新启动（同一数据库）。
+        // 先确认节点在库中已是 Offline，保证后面看到的 Online 只能来自重新注册或新心跳
+        worker.Proxy.Sever();
+        await firstMaster.WaitForNodeStatusAsync("it-node-a", NodeStatus.Offline);
+        await firstMaster.StopAsync();
+        var secondMaster = await StartMasterAsync("Master-2");
+        worker.Proxy.Restore(secondMaster.GrpcPort);
+
+        // Worker 用旧会话重连会被拒绝，重试 MaxRetryAttempts 次后应重新注册
+        await secondMaster.WaitForNodeOnlineAsync("it-node-a");
+        var task = await secondMaster.ScheduleTaskAsync(NewSiteTask("缺陷-Master重启后重连"));
+        var pages = await secondMaster.WaitForTaskCompletedAsync(task.TaskId);
+        Assert.Equal(TestWebSite.DepthTwoPages.Length, pages.Count);
+    }
+
+    [Fact(Skip = "已知缺陷 D2：Worker 停止时正在执行的任务不会被重新调度。取消后上报 Completed（引擎把被取消的请求记为 499 页面并正常结束）"
+        + "或 Failed，而故障恢复只处理 Running 任务；且 CleanupStreamResourcesAsync 先取消流再等发送队列，结果消息丢失"
+        + "（本测试中 Master 显示已完成但没有数据）")]
+    public async Task Worker正常停止时正在执行的任务由另一节点重新完成()
+    {
+        var master = await StartMasterAsync();
+        var workers = new[]
+        {
+            await StartWorkerAsync("it-node-a", master),
+            await StartWorkerAsync("it-node-b", master),
+        };
+        await master.WaitForNodeOnlineAsync("it-node-a");
+        await master.WaitForNodeOnlineAsync("it-node-b");
+
+        Site.HoldRequests();
+        using var progress = master.RecordTaskProgress();
+        var task = await master.ScheduleTaskAsync(NewSiteTask("缺陷-Worker正常停止"));
+        var running = await Poll.ValueAsync(
+            () => Task.FromResult(progress.For(task.TaskId).FirstOrDefault(e => e.CurrentStatus == TaskStatus.Running)),
+            "任务在某个节点上开始运行");
+        await Site.WaitForHeldRequestAsync(Poll.DefaultTimeout);
+        var victim = workers.Single(w => w.NodeId == running.AssignedNodeId);
+        var survivor = workers.Single(w => w.NodeId != running.AssignedNodeId);
+
+        // 相当于在 Worker 控制台按 Ctrl+C
+        await victim.StopAsync();
+        await master.WaitForNodeStatusAsync(victim.NodeId, NodeStatus.Offline);
+        Site.ReleaseRequests();
+
+        var pages = await master.WaitForTaskCompletedAsync(task.TaskId);
+        Assert.Equal(TestWebSite.DepthTwoPages.Length, pages.Count);
+        Assert.All(pages, p => Assert.Equal(200, p.StatusCode));
+        Assert.Equal(survivor.NodeId, (await master.GetTaskAsync(task.TaskId))!.AssignedNode);
+    }
+
+    [Fact(Skip = "已知缺陷 D3：流断开时 Master 不移除 SessionManager 中的会话，30 分钟内同一 NodeId 的注册被拒绝"
+        + "（Node already has an active session），Worker 直接退出")]
+    public async Task Worker崩溃后以相同NodeId重启能重新注册上线()
+    {
+        var master = await StartMasterAsync();
+        var worker = await StartWorkerAsync("it-node-a", master);
+        await master.WaitForNodeOnlineAsync("it-node-a");
+
+        await worker.CrashAsync();
+        await master.WaitForNodeStatusAsync("it-node-a", NodeStatus.Offline);
+
+        // 容器重启或手动重开 Worker：NodeId 不变（MASTER_NODE_ID 或机器名）
+        await StartWorkerAsync("it-node-a", master);
+        await master.WaitForNodeOnlineAsync("it-node-a");
+    }
+
+    [Fact(Skip = "已知缺陷 D4：Master 的 GrpcAuthenticationInterceptor 只注册到容器，没有加入 AddGrpc 的拦截器列表，"
+        + "节点令牌完全不校验")]
+    public async Task 令牌错误的节点注册被拒绝()
+    {
+        var master = await StartMasterAsync();
+        using var channel = GrpcChannel.ForAddress($"http://127.0.0.1:{master.GrpcPort}");
+        var client = new CrawlerCoordinator.CrawlerCoordinatorClient(channel);
+        var headers = new Metadata { { "authorization", "Bearer wrong-token" } };
+
+        var registration = new NodeRegistration
+        {
+            NodeId = "it-intruder",
+            MachineName = "intruder",
+            CpuCores = 1,
+            TotalMemoryGb = 1,
+            IpAddress = "127.0.0.1"
+        };
+        var error = await Assert.ThrowsAsync<RpcException>(
+            async () => await client.RegisterNodeAsync(registration, headers));
+        Assert.Equal(StatusCode.Unauthenticated, error.StatusCode);
+        Assert.Null(await master.GetNodeAsync("it-intruder"));
+    }
+}

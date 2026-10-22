@@ -6,8 +6,8 @@
 
 Master-Worker 主从架构（图 [3-1](../thesis/figures/fig3-1.png)、数据流图 [3-2](../thesis/figures/fig3-2.png)）。
 
-- **Master（`CrawlerMaster.WPF`）**：WPF + MVVM 三层（View / ViewModel / Services）。`App.xaml.cs` 用 .NET 通用主机 + `ConfigureWebHostDefaults` 让 Kestrel 同时监听 gRPC(5001, 强制 HTTP/2) 和 SignalR(5003, HTTP/1+2)，WPF 与后台服务共享一个 DI 容器；UI 线程不阻塞。
-- **Worker（`CrawlerWorker`）**：Console + `WorkerHostedService`(BackgroundService)。作为 gRPC **客户端**主动连 Master；另开 5002 的 `WorkerControl` 服务端底座（预留，未实现）。
+- **Master（`CrawlerMaster.WPF`）**：WPF + MVVM 三层（View / ViewModel / Services）。`App.xaml.cs` 用 .NET 通用主机 + `ConfigureWebHostDefaults` 让 Kestrel 同时监听 gRPC(5001, 强制 HTTP/2) 和 SignalR(5003, HTTP/1+2)，WPF 与后台服务共享一个 DI 容器；UI 线程不阻塞。后台服务的注册和启动步骤（建库、恢复 Pending 任务、启动健康检查、激活故障恢复）在 `Hosting/MasterHostingExtensions.cs`，`App.xaml.cs` 只追加界面服务；集成测试复用同一套方法。
+- **Worker（`CrawlerWorker`）**：Console + `WorkerHostedService`(BackgroundService)。作为 gRPC **客户端**主动连 Master；另开 5002 的 `WorkerControl` 服务端底座（预留，未实现）。服务注册在 `Hosting/WorkerServiceCollectionExtensions.cs`（`AddCrawlerWorker`），`Program.cs` 与集成测试共用。
 - **通信**：单条 gRPC 双向流承载所有消息，`oneof` 区分类型。
 - **组件通信约束**：ViewModel 只通过 `IEventAggregator` 收事件，不直接碰 gRPC/SignalR 底层（阶段 3.2 的硬约束）。
 
@@ -64,7 +64,7 @@ UI 创建任务（名称、插件、起始 URL、MaxDepth、MaxPages、优先级
 | 服务 | 文件 | 要点 |
 |---|---|---|
 | 节点管理 | `Services/NodeManagementService.cs`（`INodeManagementService`） | 注册、心跳更新、标记离线；节点状态 Pending→Online→Offline（图 [4-2](../thesis/figures/fig4-2.png)） |
-| 健康检查 | `Services/NodeHealthCheckService.cs` | 每 15s 检查，1 分钟无心跳→Offline，独立 DI 作用域 |
+| 健康检查 | `Services/NodeHealthCheckService.cs` | 默认每 15s 检查，1 分钟无心跳→Offline（`HealthCheckSettings:CheckIntervalSeconds` / `NodeTimeoutSeconds`），每次检查独立 DI 作用域 |
 | 会话 | `Services/SessionManager.cs` | `ConcurrentDictionary` 存 NodeId↔SessionId↔流 |
 | 调度 | `Services/TaskSchedulerHostedService.cs`（`ITaskSchedulerService`） | `PriorityQueue`；启动时 `RecoverPendingTasksFromDatabaseAsync` 按创建时间恢复 Pending 任务；任务状态 Pending→Running→Completed/Failed（图 [4-4](../thesis/figures/fig4-4.png)） |
 | 负载均衡 | `Services/LoadBalancingScheduler.cs` | 过滤：Online 且 CPU<50% 且内存使用率<60%；无可用节点返回 null，任务留队列；评分见 overview §5 |
@@ -78,7 +78,7 @@ UI 创建任务（名称、插件、起始 URL、MaxDepth、MaxPages、优先级
 ## 6. Worker 组件
 
 ### 爬虫引擎（`Services/Engine/CrawlerEngine.cs`，接口 `ICrawlerEngine`；流程图 [4-7](../thesis/figures/fig4-7.png)）
-BFS：`Queue<(Url, Depth)>` + `HashSet` 去重（URL 规范化；重定向后的 FinalUrl 也加入集合；集合上限 `MaxUrlHashSetCapacity` 告警停止）。每页：HTTP GET → `plugin.ExecuteAsync(PluginContext)` → 链接提取 → `plugin.ShouldFollowLink(url, depth)` 过滤 → 入队。爬取间隔优先取插件配置 `CrawlDelay`，否则 `CrawlerSettings.DelayBetweenRequestsMs`。`MaxPages<=0` 表示不限。进度通过 `OnProgressUpdated` 事件 → `WorkerHostedService` → Channel → 流。并发任务数由 `SemaphoreSlim`(`MaxConcurrentTasks`) 控制。
+BFS：`Queue<(Url, Depth)>` + `HashSet` 去重（URL 规范化；重定向后的 FinalUrl 也加入集合；集合上限 `MaxUrlHashSetCapacity` 告警停止）。每页：HTTP GET → `plugin.ExecuteAsync(PluginContext)` → 链接提取 → `plugin.ShouldFollowLink(url, depth)` 过滤 → 入队。爬取间隔优先取插件配置 `CrawlDelay`，否则 `CrawlerSettings.DelayBetweenRequestsMs`。`MaxPages<=0` 表示不限。进度通过 `OnProgressUpdated` 事件 → `WorkerHostedService` → Channel → 流；非终态进度按 `SignalRSettings:TaskProgressThrottleSeconds`（默认 2s，Worker 端读取）节流，终态强制上报。并发任务数由 `SemaphoreSlim`(`MaxConcurrentTasks`) 控制。
 
 ### 插件（`ICrawlerPlugin`，图 [4-8](../thesis/figures/fig4-8.png)）
 `Name`（全局唯一，等于 `CrawlerTask.PluginName`）、`Version`、`ExecuteAsync(PluginContext)→PluginResult`、`GetDefaultConfiguration()`、`ShouldFollowLink(url, depth)`（默认实现 true）。`PluginManager` 启动时扫描 `AppContext.BaseDirectory/Plugins/*.dll`，反射实例化，缓存在大小写不敏感的 `ConcurrentDictionary`。
@@ -115,3 +115,22 @@ BFS：`Queue<(Url, Depth)>` + `HashSet` 去重（URL 规范化；重定向后的
 - `MemoryManager`：进程工作集 >1GB 时清缓存 + GC。
 - 插件 `ValidateConfig`、Master 插件管理 UI、AppDomain/AssemblyLoadContext 隔离、NewsPlugin 示例。
 - Master Dockerfile（Master 是 WPF，原约束为“仅 Windows exe 发布”，与阶段五计划冲突）。
+
+## 9. 端到端集成测试（`CrawlerCore.Tests/Integration/`）
+
+目的：不启动 WPF 界面，自动验证 Master–Worker 全链路（注册、心跳、调度、爬取、落库、故障恢复、重启恢复）。运行方式见 CLAUDE.md。
+
+| 组件 | 文件 | 要点 |
+|---|---|---|
+| 进程内 Master | `Infrastructure/TestMaster.cs` | 与 `App.OnStartup` 相同的步骤和注册（`MasterHostingExtensions`），不注册界面服务；Kestrel 只监听 127.0.0.1 的随机端口，只开 gRPC；配置全部来自内存（不读输出目录的 `appsettings.json`）；临时 SQLite 文件；开启 DI 的 `ValidateScopes`/`ValidateOnBuild`，校验单例不直接持有 Scoped 服务 |
+| 进程内 Worker | `Infrastructure/TestWorker.cs` | `AddCrawlerWorker` 注册的真实 Worker；插件由 `PluginManager` 从测试输出目录 `Plugins/` 反射加载（测试工程构建后把 `MockPlugin.dll` 复制进去） |
+| 节点信息采集 | `Infrastructure/TestNodeInfoCollector.cs` | 唯一被替换的组件：委托真实采集器，但改写 NodeId（同一进程内两个 Worker 的 NodeId 会相同），并上报固定的低负载（负载均衡会过滤 CPU≥50%、内存≥60% 的节点） |
+| 故障注入 | `Infrastructure/TcpFaultProxy.cs` | 每个 Worker 经一个 TCP 代理连接 Master。`Sever` 用 RST 断开连接，模拟进程崩溃，Master 的流立即结束；`BlackHole` 保持连接但丢弃数据，模拟失联，只能靠健康检查发现；`Restore` 可切换上游端口，用于 Master 重启 |
+| 测试网站 | `Infrastructure/TestWebSite.cs` + `TestSite/*.html` | Kestrel 静态站点，记录请求路径；`HoldRequests` 扣住请求，让任务停在 Running，以便在执行中注入故障 |
+| 等待 | `Infrastructure/Poll.cs` | 轮询加超时（默认 20s），不使用固定 sleep |
+
+约定：
+- 测试中缩短的参数：心跳 1s；健康检查每 1s，5s 无心跳判离线；请求间隔 20ms；进度不节流。生产默认值不变。
+- “进度不回退”的判定依据：Master 发布给界面的 `TaskProgressUpdatedEventArgs`（状态 Pending→Running→Completed、已爬页数都单调不减）。还要等任务完成后的下一次心跳（同一条流按序处理，心跳之前的任务消息必然已处理完），再确认库中状态仍为 Completed。
+- 集成测试集合禁止并行（共享全局 Serilog 与插件目录，并且对时间敏感）。日志写到测试输出，`Component` 属性标出来自 Master 还是哪个 Worker。
+- 测试发现的生产缺陷写成“修复后应有的行为”的测试，先用 Skip 跳过（`MasterWorkerKnownDefectTests`），修复时去掉 Skip。

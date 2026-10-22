@@ -20,10 +20,8 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-	<!-- gRPC测试依赖（无ASP.NET Core Web依赖） -->
+	<!-- gRPC客户端测试依赖；DI 与通用主机由下方的 Microsoft.AspNetCore.App 共享框架提供 -->
 	<PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
-	<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.6" />
-	<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.6" />
   </ItemGroup>
 
   <ItemGroup>
@@ -40,5 +38,20 @@
   <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
+
+  <!-- 端到端集成测试（Integration/）：进程内托管 Master 与 Worker，并用 Kestrel 提供静态测试网站 -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Integration\TestSite\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- 进程内 Worker 的 PluginManager 从 AppContext.BaseDirectory/Plugins 反射加载插件，
+       这里把 MockPlugin 复制到测试输出目录的 Plugins/，与 CrawlerWorker 的部署方式一致 -->
+  <Target Name="CopyMockPluginForIntegrationTests" AfterTargets="Build">
+    <Copy SourceFiles="$(OutDir)MockPlugin.dll" DestinationFolder="$(OutDir)Plugins" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

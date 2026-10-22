@@ -256,7 +256,7 @@ DistributedCrawler/
 │   └── Common/                 # 通用工具类和扩展方法
 ├── ThesisPlugin/               # arXiv 论文爬虫插件
 ├── MockPlugin/                 # 测试用插件
-├── CrawlerCore.Tests/          # 单元测试项目
+├── CrawlerCore.Tests/          # 单元测试 + Master–Worker 端到端集成测试（Integration/）
 ├── DataAnalysis/               # Python 数据分析模块（Streamlit + LDA）
 ├── docs/                       # 设计文档、论文与开发计划
 ├── docker-compose.yml          # Docker Compose部署配置
@@ -265,10 +265,13 @@ DistributedCrawler/
 
 ## 🧪 测试与维护
 
-- **运行单元测试**：
+- **运行测试**：
   ```bash
-  dotnet test
+  dotnet test                                                        # 全部测试
+  dotnet test CrawlerCore.Tests --filter "Category=Integration"      # 只跑端到端集成测试
+  dotnet test CrawlerCore.Tests --filter "Category!=Integration"     # 只跑单元测试
   ```
+  集成测试在进程内启动 Master 后台服务和真实 Worker，爬取本地测试网站，不需要打开界面，详见 `CLAUDE.md`。
 
 - **日志查看**：
   - 日志默认输出到控制台和文件

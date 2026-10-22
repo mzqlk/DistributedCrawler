@@ -37,6 +37,8 @@ docker-compose down                    # 关闭容器
 
 另支持 .NET 标准的 `Section__Key` 双下划线环境变量。
 
+> 注意（2026-10-22 实测）：上表中 `MASTER_ENDPOINT`、`NODE_AUTH_TOKEN`、`WORKER_ENDPOINT` 的映射目前会被 `appsettings.json` 覆盖，并不生效（见 [`overview.md` §4 第 8 条](overview.md#4-已知问题与待办)）。修复前请改用 `GrpcSettings__MasterEndpoint`、`GrpcSettings__NodeAuthToken` 这类双下划线写法，或直接修改 `appsettings.json`。
+
 ## 端口
 
 | 端口 | 用途 |
@@ -60,7 +62,8 @@ docker-compose down                    # 关闭容器
 | `CrawlerSettings:DelayBetweenRequestsMs` | 1000 | 请求间隔（插件 `CrawlDelay` 优先，arXiv 插件为 15000） |
 | `CrawlerSettings:MaxConcurrentTasks` | Worker 配置 2（代码默认 5） | Worker 同时执行任务数 |
 | `CrawlerSettings:EnableProgressSimulation` | Master true / Worker false | 进度模拟（仅 DEBUG 生效） |
-| `ConnectionStrings:ConnectionString` | `Data Source=crawler.db` | Master SQLite |
+| `Database:ConnectionString` | `Data Source=crawler.db` | Master SQLite（相对路径相对于工作目录）。注意：`appsettings.json` 里写的是 `ConnectionStrings:ConnectionString`，代码不读这一项（见 overview §4 第 8 条） |
 | `SignalRSettings:Port` / `HubPath` | 5003 / `/crawlerHub` | 实时推送 |
-| `SignalRSettings:NodeUpdateThrottleSeconds` / `TaskProgressThrottleSeconds` | 5 / 2 | 推送节流 |
+| `SignalRSettings:NodeUpdateThrottleSeconds` / `TaskProgressThrottleSeconds` | 5 / 2 | 推送节流；Worker 端也读 `TaskProgressThrottleSeconds`，作为进度上报的节流间隔（终态不节流） |
+| `HealthCheckSettings:CheckIntervalSeconds` / `NodeTimeoutSeconds` | 15 / 60 | Master 健康检查间隔，以及多久没有心跳判为离线 |
 | `Logging:LogLevel:Default` | Debug | 生产环境应调高；`EnableDetailedErrors` 生产应为 false |

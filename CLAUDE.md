@@ -27,10 +27,20 @@
 
 ```bash
 dotnet build DistributedCrawler.slnx
-dotnet test CrawlerCore.Tests/CrawlerCore.Tests.csproj    # 目前 104 个测试，约 25 秒
+dotnet test CrawlerCore.Tests/CrawlerCore.Tests.csproj    # 全部：104 个单元测试 + 9 个集成测试（5 个运行、4 个已知缺陷 Skip），约 40 秒
+dotnet test CrawlerCore.Tests/CrawlerCore.Tests.csproj --filter "Category=Integration"    # 只跑集成测试，约 15 秒
+dotnet test CrawlerCore.Tests/CrawlerCore.Tests.csproj --filter "Category!=Integration"   # 排除集成测试，约 25 秒
 dotnet run --project CrawlerMaster.WPF                     # 仅 Windows
 dotnet run --project CrawlerWorker                         # 本机运行需把 appsettings 里的 MasterEndpoint 改为 http://localhost:5001
 ```
+
+端到端集成测试在 `CrawlerCore.Tests/Integration/`，用 `[Trait("Category", "Integration")]` 标记：
+- 进程内启动 Master 的全部后台服务（不开 WPF 界面）和 1–2 个真实 Worker，Worker 用 MockTestPlugin 爬取本地 Kestrel 静态网站（`Integration/TestSite/`），每个测试一个临时 SQLite 文件。只监听 127.0.0.1 的随机端口，不需要先关掉本机正在运行的 Master，也不会触发防火墙弹窗。
+- Master、Worker 与生产代码共用服务注册（`CrawlerMaster.WPF/Hosting/MasterHostingExtensions.cs`、`CrawlerWorker/Hosting/WorkerServiceCollectionExtensions.cs`）。新增或修改后台服务注册时改这两个文件，不要直接写进 `App.xaml.cs` 或 `Program.cs`（界面相关的 ViewModel、窗口仍在 `App.xaml.cs`），否则集成测试测不到。
+- Worker 经 `TcpFaultProxy` 连接 Master，用来模拟崩溃（连接被重置）和失联（连接不断但收不到数据）。健康检查超时在测试里缩短为 5 秒（`HealthCheckSettings`）。
+- 等待一律用 `Poll`（轮询加超时），不要写固定 sleep。集成测试集合禁止并行，在其他测试之后单独运行。
+- 失败时，测试输出里有 Master 和各 Worker 的完整日志，`[Component]` 标出来源。
+- `MasterWorkerKnownDefectTests` 里是集成测试发现的生产缺陷（D1–D4，见 `docs/project/overview.md`），目前 Skip。修复后去掉 Skip，它们就成为回归测试。
 
 ```bash
 cd DataAnalysis && python -m venv .venv && .venv\Scripts\activate && pip install -r requirements.txt

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>集成测试站点首页</title></head>
+<body>
+  <h1 id="top">集成测试站点</h1>
+  <!-- 深度 1：首页链接到 a/b/c 三个页面；重复链接、锚点、mailto 用于验证去重与过滤 -->
+  <ul>
+    <li><a href="a.html">页面 A</a></li>
+    <li><a href="b.html">页面 B</a></li>
+    <li><a href="c.html">页面 C</a></li>
+    <li><a href="a.html">页面 A（重复链接）</a></li>
+    <li><a href="#top">回到顶部</a></li>
+    <li><a href="mailto:test@example.com">邮件</a></li>
+  </ul>
+</body>
+</html>

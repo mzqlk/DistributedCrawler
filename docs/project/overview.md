@@ -25,7 +25,7 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
 | `CrawlerWorker` | Console + BackgroundService | 注册 → 双向流 → 心跳；`CrawlerEngine`（BFS 深度爬取）；`PluginManager`（反射加载 `Plugins/*.dll`）；`NodeInfoCollector`（cgroup v2 / Windows API 资源采集）；Dockerfile |
 | `ThesisPlugin` | 插件 | `ArXivThesisPlugin` v1.3.0，解析 arXiv `/abs/` 页面，`CrawlDelay=15000ms` |
 | `MockPlugin` | 插件 | 测试用插件 |
-| `CrawlerCore.Tests` | xUnit | 论文中报告 104 个单测全部通过（见 `docs/thesis/figures/fig6-2.png`） |
+| `CrawlerCore.Tests` | xUnit | 104 个单元测试（论文中报告全部通过，见 `docs/thesis/figures/fig6-2.png`）；`Integration/` 下是 Master–Worker 端到端集成测试（2026-10-22 新增，运行方式见 CLAUDE.md） |
 
 插件编译后由 `CrawlerWorker.csproj` 的构建目标自动复制到 Worker 输出目录 `Plugins/`。
 
@@ -39,7 +39,8 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
 | 论文爬虫插件（arXiv） | ✅ 完成（MVP） | `a9f9da5` |
 | 阶段四.1-4.2：**可视化流程设计器**（拖拽/连线/编译/拓扑排序） | ❌ 未实现 | 仓库无 Workflow/Designer 代码 |
 | 阶段四.3：插件系统 | ⚠️ 部分 | Worker 端加载已实现；Master 端插件管理 UI、`ValidateConfig`、NewsPlugin、AppDomain 隔离未做 |
-| 阶段五：测试/优化/部署 | ⚠️ 部分 | Worker Dockerfile + compose 已有；Master Dockerfile、MemoryManager、压测报告、用户/开发指南未做 |
+| 阶段五：测试/优化/部署 | ⚠️ 部分 | Worker Dockerfile + compose、端到端集成测试已有；Master Dockerfile、MemoryManager、压测报告、用户/开发指南未做 |
+| 端到端集成测试（路线图 T1） | ✅ 2026-10-22 | `CrawlerCore.Tests/Integration/`：进程内 Master 后台服务 + 真实 Worker + Kestrel 静态站点 + 临时 SQLite。覆盖注册与心跳、任务分配→爬取→落库且进度不回退、Worker 崩溃与失联后的故障转移、Master 重启后恢复 Pending 任务；另有 4 个用 Skip 标记的已知缺陷测试（见 §4 第 8 条） |
 | 任务书：CNKI 等多源插件 | ❌ 未实现 | 只有 arXiv |
 | 任务书：作者合作网络、主题层次树、文档降维散点图 | ❌ 未实现 | 分析模块只做了 LDA；合作网络可参考 `docs/analysis/reference-flask-app/` |
 | 采集与分析端到端自动联动 | ❌ 文件级对接 | 论文第 7 章列为局限 |
@@ -62,12 +63,25 @@ JSON 格式见 [`docs/analysis/README.md`](../analysis/README.md#输入数据契
 5. 两模块仅文件级对接，未形成实时数据链路。
 6. 展望方向（答辩 PPT）：更多数据源插件（IEEE、Springer）、作者合作网络与机构影响力分析、热点趋势预测与个性化推荐、性能优化。
 7. 负载均衡中的“网络得分/专业化得分”目前是常量（20/10），论文描述的“按网络延迟/同类任务经验计算”未实现。
+8. **端到端集成测试发现的缺陷**（2026-10-22，T1）。D1–D4 已用 `CrawlerCore.Tests/Integration/MasterWorkerKnownDefectTests.cs` 中的测试复现，测试暂时 Skip，修复后去掉 Skip 即为回归测试；括号内是建议的严重度，以 T2/T3 审阅报告为准。
+   - **D1 Master 重启后，在线的 Worker 不会重新注册**（P1）。`WorkerHostedService.StartStreamingAsync` 在创建流调用后（服务端尚未响应）就把 `_reconnectAttempts` 清零，计数永远到不了 `MaxRetryAttempts`，Worker 一直用失效会话重连：测试中 20 秒内被拒约 100 次，始终不会重新注册。
+   - **D2 Worker 正常停止（Ctrl+C、`docker stop`）时，正在执行的任务不会被重新调度**（P1）。停止时任务被取消，但引擎把被取消的请求记成 499 页面后正常结束，于是上报 Completed（取消发生在其他位置时上报 Failed）；故障恢复只处理 Running 任务。另外，`CleanupStreamResourcesAsync` 先取消流再等发送队列清空，结果消息会丢：测试中 Master 显示“已完成”，但没有任何数据。
+   - **D3 同一 NodeId 的 Worker 崩溃后重启，30 分钟内无法注册**（P1）。流断开时 Master 不移除 `SessionManager` 里的会话，`RegisterNode` 返回 “Node already has an active session”，Worker 随即退出。此外 `SessionManager` 是 `BackgroundService`，却只按单例注册，过期清理循环从不运行。手动重开 Worker，或容器崩溃后被 `restart_policy` 拉起（NodeId 不变）时都会遇到。
+   - **D4 Master 不校验节点令牌**（P1，安全）。`GrpcAuthenticationInterceptor` 只注册到了容器，没有加入 `AddGrpc` 的拦截器列表（只有未使用的 `GrpcHostedService` 用到它），令牌错误也能注册、建流。
+   - **Worker 停止时抛异常**（P2）。`CleanupStreamResourcesAsync` 用 `WaitAsync(TimeSpan)` 等待发送队列清空，超时抛出的是 `TimeoutException`，代码只捕获了 `OperationCanceledException`。连接已断开时，`StopAsync` 报错，`Dispose` 里的 `.Wait()` 抛出 `AggregateException`。
+   - **Windows 上 CPU 使用率始终采集失败**（P2）。`NodeInfoCollector` 中 `SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION` 声明了 `Pack = 4`，结构体只有 44 字节（应为 48），缓冲区偏小，`NtQuerySystemInformation` 返回 `STATUS_INFO_LENGTH_MISMATCH`（-1073741820，日志中每次心跳都有警告），CPU 使用率恒为 0，负载均衡的 CPU 阈值在 Windows 上不起作用。集成测试用固定负载值绕开了这一点。
+   - **任务下发与状态写库存在竞态**（P2）。`AssignTaskToOptimalNodeAsync` 先下发任务、再写 AssignedNode 和 Running；Worker 收到任务放入本地队列时会上报 Pending，日志可见它与调度器的写库交错，库中状态可能出现 Running → Pending → Running。由此推断（待验证）：在 Worker 本地排队（`MaxConcurrentTasks` 已满）的任务，库中是“Pending 且已分配节点”，节点离线时故障恢复（只查 Running）和 Master 重启恢复（只查未分配）都不会处理；极端情况下调度器写入的 Running 晚于 Completed 落库，状态回退。
+   - **Worker 的 `MASTER_ENDPOINT`、`NODE_AUTH_TOKEN`、`WORKER_ENDPOINT` 环境变量不生效**（P2）。`Program.cs` 把它们映射到主机配置，但 `Host.CreateDefaultBuilder` 随后加载的 `appsettings.json` 优先级更高，会覆盖它们（2026-10-22 本机实测：设置了 `MASTER_ENDPOINT`，Worker 仍去连 `host.docker.internal`）。docker-compose 里的值碰巧与 `appsettings.json` 相同，所以没有暴露。标准写法 `GrpcSettings__MasterEndpoint` 可以生效。
+   - **“已完成但无数据”的短暂窗口**（P3）。Worker 先发 Completed 进度、后发 `CrawlResult`，两条消息之间界面会看到任务已完成但没有数据。
+   - **数据库连接字符串的配置不生效**（P3）。代码读 `Database:ConnectionString`（`DatabaseSettings.SectionName = "Database"`），`appsettings.json` 写的是 `ConnectionStrings:ConnectionString`；目前碰巧与默认值相同。
+   - **每个任务的第一条引擎进度不会上报**（P3）。进度节流的 `AddOrUpdate` 走新增分支时没有设置 `shouldReport`。
+   - **节点状态事件重复发布**（P3）。注册时 Online 事件发布 3 次，断流时 Offline 事件发布 2–3 次（`RegisterNode`、`RegisterNodeAsync`、`StartStreaming`，以及两次 `CleanupNodeStreamAsync` 调用）。
 
 ## 5. 文档与代码的差异（以代码为准）
 
 | 项 | 文档说法 | 代码实际 |
 |---|---|---|
-| 健康检查 | 开发计划：每 10s 检查、30s 超时；论文：每 30s 检查、2 分钟超时 | `NodeHealthCheckService`：每 **15s** 检查，**1 分钟**无心跳判离线 |
+| 健康检查 | 开发计划：每 10s 检查、30s 超时；论文：每 30s 检查、2 分钟超时 | `NodeHealthCheckService`：每 **15s** 检查，**1 分钟**无心跳判离线（2026-10-22 起可经 `HealthCheckSettings` 配置，默认值不变） |
 | 负载均衡 | 论文式 5-1：CPU×0.4 + 内存×0.3 + 网络×0.2 + 专业化×0.1 | `LoadBalancingScheduler`：先过滤 Online 且 CPU<50%、内存使用率<60%；得分 = (100−CPU)×0.4 + (100−内存%)×0.3 + **20 + 10（常量）** |
 | 重连 | 论文 4.1.3.2 写“指数退避” | `WorkerHostedService.HandleStreamReconnectAsync`：**固定间隔** `RetryDelayMilliseconds`，超过 `MaxRetryAttempts` 次后全量重新注册（论文 5.1.2 的描述是对的） |
 | 任务队列 | 论文写 `ConcurrentPriorityQueue` | 开发计划/代码：`PriorityQueue<CrawlerTask,int>`（数值越大优先级越高，1–5） |
